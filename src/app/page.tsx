@@ -16,6 +16,22 @@ type ChatSession = {
   id: string;
   title: string;
   messages: Message[];
+  isPersisted: boolean;
+};
+
+type BackendConversation = {
+  id?: unknown;
+  title?: unknown;
+};
+
+type CreateConversationResponse = {
+  conversation?: BackendConversation;
+  id?: unknown;
+  title?: unknown;
+  answer?: string;
+  detail?: string;
+  error?: string;
+  message?: string;
 };
 
 const STORAGE_KEY = "ai-learning-assistant-sessions";
@@ -49,14 +65,6 @@ function createId() {
   return `${Date.now()}-${Math.random().toString(16).slice(2)}`;
 }
 
-function createSession(title = "新对话"): ChatSession {
-  return {
-    id: createId(),
-    title,
-    messages: [],
-  };
-}
-
 function buildSessionTitle(input: string) {
   const normalized = input.replace(/\s+/g, " ").trim();
 
@@ -82,6 +90,75 @@ function isMessage(value: unknown): value is Message {
 
 function serializeSessionsForStorage(sessions: ChatSession[]) {
   return JSON.stringify(sessions);
+}
+
+function getResponseErrorMessage(errorText: string, fallback: string) {
+  try {
+    const errorData = JSON.parse(errorText) as {
+      answer?: string;
+      detail?: string;
+      error?: string;
+      message?: string;
+    };
+
+    return (
+      errorData.answer ||
+      errorData.detail ||
+      errorData.error ||
+      errorData.message ||
+      fallback
+    );
+  } catch {
+    return errorText.trim() || fallback;
+  }
+}
+
+function getAssistantContent(value: unknown) {
+  if (typeof value === "string") {
+    return value;
+  }
+
+  if (typeof value !== "object" || value === null) {
+    return "";
+  }
+
+  const candidate = value as {
+    answer?: unknown;
+    content?: unknown;
+    assistant_message?: { content?: unknown };
+    message?: { content?: unknown } | unknown;
+    messages?: Array<{ role?: unknown; content?: unknown }>;
+  };
+
+  if (typeof candidate.assistant_message?.content === "string") {
+    return candidate.assistant_message.content;
+  }
+
+  if (typeof candidate.answer === "string") {
+    return candidate.answer;
+  }
+
+  if (typeof candidate.content === "string") {
+    return candidate.content;
+  }
+
+  if (
+    typeof candidate.message === "object" &&
+    candidate.message !== null &&
+    "content" in candidate.message &&
+    typeof candidate.message.content === "string"
+  ) {
+    return candidate.message.content;
+  }
+
+  const assistantMessage = candidate.messages?.find(
+    (message) =>
+      message.role === "assistant" && typeof message.content === "string"
+  );
+
+  return typeof assistantMessage?.content === "string"
+    ? assistantMessage.content
+    : "";
 }
 
 function removeLegacyInitialMessage(messages: Message[]) {
@@ -380,6 +457,8 @@ export default function Home() {
   const [sessionErrors, setSessionErrors] = useState<Record<string, string>>({});
   const [hasLoaded, setHasLoaded] = useState(false);
   const [hasCheckedAuth, setHasCheckedAuth] = useState(false);
+  const [isCreatingSession, setIsCreatingSession] = useState(false);
+  const [pageError, setPageError] = useState("");
 
   const bottomRef = useRef<HTMLDivElement | null>(null);
   const previousSessionIdRef = useRef("");
@@ -400,6 +479,72 @@ export default function Home() {
   const shouldShowThinkingIndicator =
     isCurrentSessionLoading && currentSessionLastMessage?.role !== "assistant";
 
+  async function createBackendSession(title = "新对话") {
+    const authState = parseAuthState(localStorage.getItem(AUTH_STORAGE_KEY));
+
+    if (!authState) {
+      localStorage.removeItem(AUTH_STORAGE_KEY);
+      window.location.href = "/login";
+      throw new Error("登录已失效，请重新登录。");
+    }
+
+    const response = await fetch("/api/chat/conversation", {
+      method: "POST",
+      headers: {
+        Authorization: buildAuthorizationHeader(authState),
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ title }),
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(
+        getResponseErrorMessage(errorText, "创建对话失败，请稍后再试。")
+      );
+    }
+
+    const data = (await response.json()) as CreateConversationResponse;
+    const conversation = data.conversation || data;
+    const conversationId = conversation.id;
+
+    if (typeof conversationId !== "string" || !conversationId.trim()) {
+      throw new Error("创建对话响应缺少 conversation.id。");
+    }
+
+    return {
+      id: conversationId,
+      title:
+        typeof conversation.title === "string" && conversation.title.trim()
+          ? conversation.title.trim()
+          : title,
+      messages: [],
+      isPersisted: true,
+    };
+  }
+
+  async function ensureBackendSession(session: ChatSession, title = session.title) {
+    if (session.isPersisted) {
+      return session;
+    }
+
+    const persistedSession = await createBackendSession(title);
+    const nextSession = {
+      ...persistedSession,
+      title: persistedSession.title || title,
+      messages: session.messages,
+    };
+
+    setSessions((prev) =>
+      prev.map((candidate) =>
+        candidate.id === session.id ? nextSession : candidate
+      )
+    );
+    setCurrentSessionId(nextSession.id);
+
+    return nextSession;
+  }
+
   useEffect(() => {
     try {
       const authState = parseAuthState(localStorage.getItem(AUTH_STORAGE_KEY));
@@ -419,6 +564,9 @@ export default function Home() {
   }, []);
 
   useEffect(() => {
+    let isCancelled = false;
+
+    async function restoreSessions() {
     let nextSessions: ChatSession[] = [];
     let savedCurrentSessionId = "";
 
@@ -445,6 +593,7 @@ export default function Home() {
                   ? session.title.trim()
                   : "新对话",
               messages,
+              isPersisted: session?.isPersisted === true,
             };
           });
         }
@@ -454,18 +603,41 @@ export default function Home() {
     }
 
     if (nextSessions.length === 0) {
-      nextSessions = [createSession()];
+      try {
+        nextSessions = [await createBackendSession()];
+      } catch (error) {
+        console.error("Failed to create initial session:", error);
+        setPageError(
+          error instanceof Error
+            ? error.message
+            : "创建初始对话失败，请稍后再试。"
+        );
+      }
+    }
+
+    if (isCancelled) {
+      return;
     }
 
     setSessions(nextSessions);
     setCurrentSessionId(
-      savedCurrentSessionId &&
+      nextSessions.length > 0 &&
+        savedCurrentSessionId &&
         nextSessions.some((session) => session.id === savedCurrentSessionId)
         ? savedCurrentSessionId
-        : nextSessions[0].id
+        : nextSessions[0]?.id || ""
     );
     setHasLoaded(true);
-  }, []);
+    }
+
+    if (hasCheckedAuth) {
+      void restoreSessions();
+    }
+
+    return () => {
+      isCancelled = true;
+    };
+  }, [hasCheckedAuth]);
 
   useEffect(() => {
     if (!hasLoaded || sessions.length === 0) {
@@ -499,23 +671,33 @@ export default function Home() {
     previousLoadingRef.current = isCurrentSessionLoading;
   }, [currentSession?.id, currentSession?.messages.length, isCurrentSessionLoading]);
 
-  function handleCreateSession() {
-    const newSession = createSession();
+  async function handleCreateSession() {
+    setIsCreatingSession(true);
+    setPageError("");
 
-    setSessions((prev) => [newSession, ...prev]);
-    setCurrentSessionId(newSession.id);
-    setInput("");
+    try {
+      const newSession = await createBackendSession();
+
+      setSessions((prev) => [newSession, ...prev]);
+      setCurrentSessionId(newSession.id);
+      setInput("");
+    } catch (error) {
+      setPageError(
+        error instanceof Error ? error.message : "创建对话失败，请稍后再试。"
+      );
+    } finally {
+      setIsCreatingSession(false);
+    }
   }
 
   function handleDeleteSession(sessionId: string) {
     if (sessions.length === 1) {
-      const resetSession = createSession();
-
-      setSessions([resetSession]);
-      setCurrentSessionId(resetSession.id);
+      setSessions([]);
+      setCurrentSessionId("");
       setInput("");
       setLoadingSessions({});
       setSessionErrors({});
+      void handleCreateSession();
       return;
     }
 
@@ -583,7 +765,7 @@ export default function Home() {
   }
 
   async function handleSubmit(overrideInput?: string) {
-    if (!currentSession || isCurrentSessionLoading) {
+    if (!currentSession || isCurrentSessionLoading || isCreatingSession) {
       return;
     }
 
@@ -605,16 +787,32 @@ export default function Home() {
       return;
     }
 
+    let activeSession = currentSession;
+
+    try {
+      activeSession = await ensureBackendSession(
+        currentSession,
+        buildSessionTitle(messageContent)
+      );
+      setPageError("");
+    } catch (error) {
+      setPageError(
+        error instanceof Error ? error.message : "创建对话失败，请稍后再试。"
+      );
+      return;
+    }
+
     const userMessage: Message = {
       role: "user",
       content: messageContent,
     };
 
-    const updatedMessages = [...currentSession.messages, userMessage];
+    const updatedMessages = [...activeSession.messages, userMessage];
+    const activeSessionId = activeSession.id;
 
     setSessions((prev) =>
       prev.map((session) =>
-        session.id === currentSession.id
+        session.id === activeSessionId
           ? {
               ...session,
               title:
@@ -630,17 +828,17 @@ export default function Home() {
     setInput("");
     setSessionErrors((prev) => ({
       ...prev,
-      [currentSession.id]: "",
+      [activeSessionId]: "",
     }));
     setLoadingSessions((prev) => ({
       ...prev,
-      [currentSession.id]: true,
+      [activeSessionId]: true,
     }));
 
     const appendAssistantContent = (content: string) => {
       setSessions((prev) =>
         prev.map((session) => {
-          if (session.id !== currentSession.id) {
+          if (session.id !== activeSessionId) {
             return session;
           }
 
@@ -670,7 +868,7 @@ export default function Home() {
     const setAssistantFallback = (content: string) => {
       setSessions((prev) =>
         prev.map((session) => {
-          if (session.id !== currentSession.id) {
+          if (session.id !== activeSessionId) {
             return session;
           }
 
@@ -700,34 +898,36 @@ export default function Home() {
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
-          messages: updatedMessages,
+          conversation_id: activeSessionId,
+          message: messageContent,
         }),
       });
 
       if (!response.ok) {
         const errorText = await response.text();
-        let errorMessage = "请求失败了，请稍后再试。";
-
-        try {
-          const errorData = JSON.parse(errorText) as {
-            answer?: string;
-            detail?: string;
-            error?: string;
-          };
-          errorMessage =
-            errorData.answer || errorData.detail || errorData.error || errorMessage;
-        } catch {
-          errorMessage = errorText.trim() || errorMessage;
-        }
+        const errorMessage = getResponseErrorMessage(
+          errorText,
+          "请求失败了，请稍后再试。"
+        );
 
         setSessionErrors((prev) => ({
           ...prev,
-          [currentSession.id]: errorMessage,
+          [activeSessionId]: errorMessage,
         }));
         return;
       }
 
       appendAssistantContent("");
+
+      const contentType = response.headers.get("Content-Type") || "";
+
+      if (contentType.includes("application/json")) {
+        const data = (await response.json()) as unknown;
+        const answer = getAssistantContent(data);
+
+        setAssistantFallback(answer || "模型暂时没有返回内容。");
+        return;
+      }
 
       if (!response.body) {
         const answer = await response.text();
@@ -770,12 +970,12 @@ export default function Home() {
       console.error(error);
       setSessionErrors((prev) => ({
         ...prev,
-        [currentSession.id]: "请求失败了，请稍后再试。",
+        [activeSessionId]: "请求失败了，请稍后再试。",
       }));
     } finally {
       setLoadingSessions((prev) => ({
         ...prev,
-        [currentSession.id]: false,
+        [activeSessionId]: false,
       }));
     }
   }
@@ -793,10 +993,13 @@ export default function Home() {
       <div className="mx-auto grid w-full max-w-6xl gap-6 lg:grid-cols-[280px_minmax(0,1fr)]">
         <aside className="flex h-[calc(100vh-4rem)] flex-col rounded-3xl border border-zinc-200 bg-white p-4 shadow-sm md:h-[calc(100vh-5rem)] lg:sticky lg:top-6">
           <button
-            onClick={handleCreateSession}
+            onClick={() => {
+              void handleCreateSession();
+            }}
+            disabled={isCreatingSession}
             className="w-full rounded-2xl bg-zinc-900 px-4 py-3 text-sm font-medium text-white transition hover:bg-zinc-700 disabled:cursor-not-allowed disabled:bg-zinc-400"
           >
-            新建对话
+            {isCreatingSession ? "创建中..." : "新建对话"}
           </button>
 
           <div className="mt-4 min-h-0 flex-1 space-y-2 overflow-y-auto pr-1">
@@ -970,6 +1173,12 @@ export default function Home() {
                 </div>
               )}
 
+              {pageError && (
+                <div className="rounded-2xl border border-red-200 bg-red-50 px-5 py-4 text-red-600">
+                  {pageError}
+                </div>
+              )}
+
               <div ref={bottomRef} />
             </div>
           </div>
@@ -999,7 +1208,7 @@ export default function Home() {
               onClick={() => {
                 void handleSubmit();
               }}
-              disabled={isCurrentSessionLoading}
+              disabled={isCurrentSessionLoading || isCreatingSession || !currentSession}
               className="mt-4 inline-flex items-center rounded-2xl bg-zinc-900 px-5 py-3 text-sm font-medium text-white transition hover:bg-zinc-700 disabled:cursor-not-allowed disabled:bg-zinc-400"
             >
               {isCurrentSessionLoading ? "思考中..." : "发送消息"}
