@@ -49,3 +49,50 @@ export function buildAuthorizationHeader(authState: AuthState) {
 
   return `${normalizedTokenType} ${authState.access_token.trim()}`;
 }
+
+export function getAuthErrorMessage(data: LoginResponse, fallback: string) {
+  if (typeof data.error === "string" && data.error.trim()) {
+    return data.error.trim();
+  }
+
+  if (typeof data.message === "string" && data.message.trim()) {
+    return data.message.trim();
+  }
+
+  const detail = data.detail;
+
+  if (typeof detail === "string" && detail.trim()) {
+    return detail.trim();
+  }
+
+  if (Array.isArray(detail)) {
+    const detailMessages = detail
+      .map((item) => {
+        if (typeof item === "string") {
+          return item;
+        }
+
+        if (typeof item !== "object" || item === null) {
+          return "";
+        }
+
+        const candidate = item as { loc?: unknown; msg?: unknown };
+        const location = Array.isArray(candidate.loc)
+          ? candidate.loc.join(".")
+          : typeof candidate.loc === "string"
+            ? candidate.loc
+            : "";
+        const message =
+          typeof candidate.msg === "string" ? candidate.msg.trim() : "";
+
+        return location && message ? `${location}: ${message}` : message;
+      })
+      .filter(Boolean);
+
+    if (detailMessages.length > 0) {
+      return detailMessages.join("；");
+    }
+  }
+
+  return fallback;
+}

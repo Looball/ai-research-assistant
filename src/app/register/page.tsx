@@ -9,10 +9,11 @@ import {
   type LoginResponse,
 } from "@/lib/auth";
 
-export default function LoginPage() {
+export default function RegisterPage() {
   const router = useRouter();
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
   const [error, setError] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
 
@@ -21,8 +22,13 @@ export default function LoginPage() {
 
     const normalizedUsername = username.trim();
 
-    if (!normalizedUsername || !password) {
-      setError("请输入用户名和密码。");
+    if (!normalizedUsername || !password || !confirmPassword) {
+      setError("请输入用户名、密码和确认密码。");
+      return;
+    }
+
+    if (password !== confirmPassword) {
+      setError("两次输入的密码不一致。");
       return;
     }
 
@@ -30,7 +36,7 @@ export default function LoginPage() {
     setIsSubmitting(true);
 
     try {
-      const response = await fetch("/api/login", {
+      const response = await fetch("/api/register", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -43,20 +49,20 @@ export default function LoginPage() {
       const data = (await response.json()) as LoginResponse;
 
       if (!response.ok) {
-        throw new Error(getAuthErrorMessage(data, "登录失败，请稍后再试。"));
+        throw new Error(getAuthErrorMessage(data, "注册失败，请稍后再试。"));
       }
 
       if (!isAuthState(data)) {
-        throw new Error("登录响应缺少 access_token 或 token_type。");
+        throw new Error("注册响应缺少 access_token 或 token_type。");
       }
 
       localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(data));
       router.push("/");
-    } catch (loginError) {
+    } catch (registerError) {
       setError(
-        loginError instanceof Error
-          ? loginError.message
-          : "登录失败，请稍后再试。"
+        registerError instanceof Error
+          ? registerError.message
+          : "注册失败，请稍后再试。"
       );
     } finally {
       setIsSubmitting(false);
@@ -69,7 +75,7 @@ export default function LoginPage() {
         <div>
           <p className="text-sm font-medium text-zinc-500">本地知识库问答系统</p>
           <h1 className="mt-3 text-3xl font-bold tracking-tight text-zinc-900">
-            登录
+            注册
           </h1>
         </div>
 
@@ -103,9 +109,27 @@ export default function LoginPage() {
               type="password"
               value={password}
               onChange={(event) => setPassword(event.target.value)}
-              autoComplete="current-password"
+              autoComplete="new-password"
               className="mt-2 w-full rounded-2xl border border-zinc-300 bg-white px-4 py-3 text-zinc-900 outline-none transition focus:border-zinc-500 focus:ring-2 focus:ring-zinc-200"
               placeholder="请输入密码"
+            />
+          </div>
+
+          <div>
+            <label
+              htmlFor="confirm-password"
+              className="block text-sm font-medium text-zinc-700"
+            >
+              确认密码
+            </label>
+            <input
+              id="confirm-password"
+              type="password"
+              value={confirmPassword}
+              onChange={(event) => setConfirmPassword(event.target.value)}
+              autoComplete="new-password"
+              className="mt-2 w-full rounded-2xl border border-zinc-300 bg-white px-4 py-3 text-zinc-900 outline-none transition focus:border-zinc-500 focus:ring-2 focus:ring-zinc-200"
+              placeholder="请再次输入密码"
             />
           </div>
 
@@ -120,16 +144,16 @@ export default function LoginPage() {
             disabled={isSubmitting}
             className="w-full rounded-2xl bg-zinc-900 px-4 py-3 text-sm font-medium text-white transition hover:bg-zinc-700 disabled:cursor-not-allowed disabled:bg-zinc-400"
           >
-            {isSubmitting ? "登录中..." : "登录"}
+            {isSubmitting ? "注册中..." : "注册"}
           </button>
 
           <p className="text-center text-sm text-zinc-500">
-            还没有账号？{" "}
+            已有账号？{" "}
             <a
-              href="/register"
+              href="/login"
               className="font-medium text-zinc-900 transition hover:text-zinc-600"
             >
-              注册账号
+              去登录
             </a>
           </p>
         </form>
