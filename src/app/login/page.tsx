@@ -70,9 +70,6 @@ export default function LoginPage() {
           <h1 className="mt-3 text-3xl font-bold tracking-tight text-zinc-900">
             登录
           </h1>
-          <p className="mt-3 text-sm leading-6 text-zinc-500">
-            使用 users 表中的用户名和密码登录。
-          </p>
         </div>
 
         <form onSubmit={handleSubmit} className="mt-8 space-y-5">
