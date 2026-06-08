@@ -93,21 +93,62 @@ function serializeSessionsForStorage(sessions: ChatSession[]) {
 }
 
 function getResponseErrorMessage(errorText: string, fallback: string) {
+  const getStringValue = (value: unknown) =>
+    typeof value === "string" && value.trim() ? value.trim() : "";
+
   try {
     const errorData = JSON.parse(errorText) as {
-      answer?: string;
-      detail?: string;
-      error?: string;
-      message?: string;
+      answer?: unknown;
+      detail?: unknown;
+      error?: unknown;
+      message?: unknown;
     };
+    const directMessage =
+      getStringValue(errorData.answer) ||
+      getStringValue(errorData.detail) ||
+      getStringValue(errorData.error) ||
+      getStringValue(errorData.message);
 
-    return (
-      errorData.answer ||
-      errorData.detail ||
-      errorData.error ||
-      errorData.message ||
-      fallback
-    );
+    if (directMessage) {
+      return directMessage;
+    }
+
+    if (Array.isArray(errorData.detail)) {
+      const detailMessages = errorData.detail
+        .map((detail) => {
+          if (typeof detail === "string") {
+            return detail;
+          }
+
+          if (typeof detail !== "object" || detail === null) {
+            return "";
+          }
+
+          const candidate = detail as {
+            loc?: unknown;
+            msg?: unknown;
+            type?: unknown;
+          };
+          const location = Array.isArray(candidate.loc)
+            ? candidate.loc.join(".")
+            : getStringValue(candidate.loc);
+          const message = getStringValue(candidate.msg);
+          const type = getStringValue(candidate.type);
+
+          if (location && message) {
+            return `${location}: ${message}`;
+          }
+
+          return message || type;
+        })
+        .filter(Boolean);
+
+      if (detailMessages.length > 0) {
+        return detailMessages.join("；");
+      }
+    }
+
+    return fallback;
   } catch {
     return errorText.trim() || fallback;
   }
