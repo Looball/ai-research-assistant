@@ -70,6 +70,26 @@ export function getAuthUsername(authState: AuthState) {
   return "";
 }
 
+export async function readAuthResponse(response: Response) {
+  const responseText = await response.text();
+
+  if (!responseText.trim()) {
+    return {} as LoginResponse;
+  }
+
+  try {
+    const data = JSON.parse(responseText) as unknown;
+
+    if (typeof data === "object" && data !== null) {
+      return data as LoginResponse;
+    }
+  } catch {
+    return { error: responseText.trim() } as LoginResponse;
+  }
+
+  return { error: responseText.trim() } as LoginResponse;
+}
+
 export function getAuthErrorMessage(data: LoginResponse, fallback: string) {
   if (typeof data.error === "string" && data.error.trim()) {
     return data.error.trim();

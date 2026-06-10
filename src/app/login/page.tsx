@@ -6,7 +6,7 @@ import {
   AUTH_STORAGE_KEY,
   getAuthErrorMessage,
   isAuthState,
-  type LoginResponse,
+  readAuthResponse,
 } from "@/lib/auth";
 
 export default function LoginPage() {
@@ -40,7 +40,7 @@ export default function LoginPage() {
           password,
         }),
       });
-      const data = (await response.json()) as LoginResponse;
+      const data = await readAuthResponse(response);
 
       if (!response.ok) {
         throw new Error(getAuthErrorMessage(data, "登录失败，请稍后再试。"));

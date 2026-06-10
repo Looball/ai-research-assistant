@@ -6,7 +6,7 @@ import {
   AUTH_STORAGE_KEY,
   getAuthErrorMessage,
   isAuthState,
-  type LoginResponse,
+  readAuthResponse,
 } from "@/lib/auth";
 
 export default function RegisterPage() {
@@ -46,7 +46,7 @@ export default function RegisterPage() {
           password,
         }),
       });
-      const data = (await response.json()) as LoginResponse;
+      const data = await readAuthResponse(response);
 
       if (!response.ok) {
         throw new Error(getAuthErrorMessage(data, "注册失败，请稍后再试。"));
