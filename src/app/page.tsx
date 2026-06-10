@@ -558,6 +558,7 @@ export default function Home() {
   const [newKnowledgeBaseName, setNewKnowledgeBaseName] = useState("");
 
   const bottomRef = useRef<HTMLDivElement | null>(null);
+  const messagesContainerRef = useRef<HTMLDivElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const previousSessionIdRef = useRef("");
   const previousMessageCountRef = useRef(0);
@@ -1232,8 +1233,8 @@ export default function Home() {
   }
 
   return (
-    <main className="research-canvas min-h-screen px-3 py-3 md:px-5 md:py-5">
-      <div className="mx-auto grid min-w-0 w-full max-w-[1440px] gap-4 lg:grid-cols-[304px_minmax(0,1fr)]">
+    <main className="research-canvas min-h-screen px-3 py-3 md:px-5 md:py-5 lg:h-screen lg:overflow-hidden">
+      <div className="mx-auto grid min-w-0 w-full max-w-[1440px] gap-4 lg:h-full lg:grid-cols-[304px_minmax(0,1fr)]">
         <aside className="research-enter flex min-w-0 max-h-[calc(100vh-1.5rem)] flex-col border border-[#bdcac5] bg-[#edf2ef] p-4 lg:sticky lg:top-5 lg:h-[calc(100vh-2.5rem)] lg:max-h-none">
           <div className="flex items-center justify-between gap-3 border-b border-[#c7d1cd] px-1 pb-4">
             <div className="min-w-0">
@@ -1444,8 +1445,8 @@ export default function Home() {
           </div>
         </aside>
 
-        <section className="research-paper research-enter min-w-0 border border-[#bdcac5]">
-          <header className="border-b border-[#cbd5d1] px-5 py-5 md:px-8 md:py-6">
+        <section className="research-paper research-enter min-w-0 border border-[#bdcac5] lg:flex lg:h-full lg:min-h-0 lg:flex-col lg:overflow-hidden">
+          <header className="shrink-0 border-b border-[#cbd5d1] bg-[#fcfdfb] px-5 py-5 md:px-8 md:py-6">
             <div className="flex flex-col justify-between gap-5 md:flex-row md:items-end">
               <div className="min-w-0">
                 <div className="flex items-center gap-3">
@@ -1480,7 +1481,10 @@ export default function Home() {
             </div>
           </header>
 
-          <div className="px-5 py-7 md:px-8 md:py-9">
+          <div
+            ref={messagesContainerRef}
+            className="research-scroll px-5 py-7 md:px-8 md:py-9 lg:min-h-0 lg:flex-1 lg:overflow-y-auto lg:overscroll-contain"
+          >
             <div className="space-y-6">
               {currentSession?.messages.length === 0 && (
                 <div className="border-y border-[#cbd5d1] py-12 text-center">
@@ -1581,7 +1585,7 @@ export default function Home() {
             </div>
           </div>
 
-          <div className="border-t border-[#cbd5d1] bg-[#eef3f0] px-5 py-5 md:px-8 md:py-6">
+          <div className="shrink-0 border-t border-[#cbd5d1] bg-[#eef3f0] px-5 py-5 md:px-8 md:py-6">
             <div className="flex items-center justify-between gap-4">
               <label
                 htmlFor="question"
@@ -1839,6 +1843,14 @@ export default function Home() {
 
       <button
         onClick={() => {
+          if (window.matchMedia("(min-width: 1024px)").matches) {
+            messagesContainerRef.current?.scrollTo({
+              top: 0,
+              behavior: "smooth",
+            });
+            return;
+          }
+
           window.scrollTo({ top: 0, behavior: "smooth" });
         }}
         className="font-utility fixed bottom-5 right-5 border border-[#9bada6] bg-[#fcfdfb] px-3 py-2 text-[10px] font-semibold uppercase text-[#46514e] shadow-sm transition hover:border-[#176b62] hover:text-[#176b62]"
