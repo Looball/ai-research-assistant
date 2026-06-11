@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { type ReactNode, useEffect, useRef, useState } from "react";
 import {
   AUTH_STORAGE_KEY,
@@ -1332,9 +1333,13 @@ export default function Home() {
               <p className="font-utility text-[10px] font-semibold uppercase text-[#72807b]">
                 Researcher
               </p>
-              <p className="font-display mt-1 truncate text-lg font-semibold text-[#17201f]">
+              <Link
+                href="/settings"
+                title="打开用户设置"
+                className="font-display mt-1 block truncate text-lg font-semibold text-[#17201f] underline decoration-[#d5a83b] decoration-2 underline-offset-4 transition hover:text-[#176b62]"
+              >
                 {currentUsername || "已登录"}
-              </p>
+              </Link>
             </div>
             <button
               type="button"
