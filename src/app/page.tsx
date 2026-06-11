@@ -1,7 +1,13 @@
 "use client";
 
 import Link from "next/link";
-import { type ReactNode, useEffect, useRef, useState } from "react";
+import {
+  type ReactNode,
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
 import {
   AUTH_STORAGE_KEY,
   buildAuthorizationHeader,
@@ -99,6 +105,8 @@ type UploadKnowledgeFilesResponse = {
   error?: string;
   message?: string;
 };
+
+type ListKnowledgeFilesResponse = UploadKnowledgeFilesResponse;
 
 const STORAGE_KEY = "ai-learning-assistant-sessions";
 const CURRENT_SESSION_KEY = "ai-learning-assistant-current-session";
@@ -647,6 +655,9 @@ export default function Home() {
     useState("");
   const [knowledgeFileDetachError, setKnowledgeFileDetachError] =
     useState("");
+  const [isLoadingKnowledgeFiles, setIsLoadingKnowledgeFiles] =
+    useState(false);
+  const [knowledgeFileLoadError, setKnowledgeFileLoadError] = useState("");
   const [pageError, setPageError] = useState("");
   const [currentUsername, setCurrentUsername] = useState("");
   const [knowledgeBases, setKnowledgeBases] = useState<KnowledgeBase[]>([
@@ -709,6 +720,99 @@ export default function Home() {
   );
   const selectedKnowledgeBaseFileCount =
     selectedKnowledgeFiles.length || selectedKnowledgeBase?.fileCount || 0;
+
+  const loadKnowledgeBaseFiles = useCallback(
+    async (knowledgeBaseId: string) => {
+      if (!knowledgeBaseId || knowledgeBaseId === DEFAULT_KNOWLEDGE_BASE_ID) {
+        return;
+      }
+
+      const authState = parseAuthState(localStorage.getItem(AUTH_STORAGE_KEY));
+
+      if (!authState) {
+        localStorage.removeItem(AUTH_STORAGE_KEY);
+        window.location.href = "/login";
+        return;
+      }
+
+      setIsLoadingKnowledgeFiles(true);
+      setKnowledgeFileLoadError("");
+
+      try {
+        const response = await fetch(
+          `/api/chat/knowledge-base/${encodeURIComponent(
+            knowledgeBaseId
+          )}/files`,
+          {
+            method: "GET",
+            headers: {
+              Authorization: buildAuthorizationHeader(authState),
+            },
+            cache: "no-store",
+          }
+        );
+
+        if (!response.ok) {
+          const errorText = await response.text();
+          throw new Error(
+            getResponseErrorMessage(
+              errorText,
+              "读取知识库文件失败，请稍后再试。"
+            )
+          );
+        }
+
+        const data = (await response.json()) as ListKnowledgeFilesResponse;
+        const fileValues = Array.isArray(data.files) ? data.files : [];
+        const loadedFiles = fileValues
+          .map((value) => toKnowledgeFile(value))
+          .filter(
+            (knowledgeFile): knowledgeFile is KnowledgeFile =>
+              knowledgeFile !== null
+          );
+        const loadedFileIds = new Set(loadedFiles.map((file) => file.id));
+
+        setKnowledgeFiles((prev) => [
+          ...loadedFiles,
+          ...prev.filter((file) => !loadedFileIds.has(file.id)),
+        ]);
+        setKnowledgeBaseFiles((prev) => [
+          ...prev.filter(
+            (association) =>
+              association.knowledgeBaseId !== knowledgeBaseId
+          ),
+          ...loadedFiles.map((file) => ({
+            knowledgeBaseId,
+            knowledgeFileId: file.id,
+          })),
+        ]);
+        setKnowledgeBases((prev) =>
+          prev.map((knowledgeBase) =>
+            knowledgeBase.id === knowledgeBaseId
+              ? {
+                  ...knowledgeBase,
+                  fileCount: loadedFiles.length,
+                }
+              : knowledgeBase
+          )
+        );
+      } catch (error) {
+        setKnowledgeFileLoadError(
+          error instanceof Error
+            ? error.message
+            : "读取知识库文件失败，请稍后再试。"
+        );
+      } finally {
+        setIsLoadingKnowledgeFiles(false);
+      }
+    },
+    []
+  );
+
+  async function handleOpenFileManager() {
+    setIsFileManagerOpen(true);
+    await loadKnowledgeBaseFiles(selectedKnowledgeBaseId);
+  }
 
   async function handleCreateKnowledgeBase() {
     const normalizedName = newKnowledgeBaseName.trim();
@@ -831,43 +935,7 @@ export default function Home() {
         throw new Error("上传响应缺少有效的 files 数据。");
       }
 
-      setKnowledgeFiles((prev) => {
-        const uploadedIds = new Set(uploadedFiles.map((file) => file.id));
-        return [
-          ...uploadedFiles,
-          ...prev.filter((file) => !uploadedIds.has(file.id)),
-        ];
-      });
-      setKnowledgeBaseFiles((prev) => {
-        const nextAssociations = [...prev];
-
-        uploadedFiles.forEach((file) => {
-          const associationExists = nextAssociations.some(
-            (association) =>
-              association.knowledgeBaseId === selectedKnowledgeBaseId &&
-              association.knowledgeFileId === file.id
-          );
-
-          if (!associationExists) {
-            nextAssociations.push({
-              knowledgeBaseId: selectedKnowledgeBaseId,
-              knowledgeFileId: file.id,
-            });
-          }
-        });
-
-        return nextAssociations;
-      });
-      setKnowledgeBases((prev) =>
-        prev.map((knowledgeBase) =>
-          knowledgeBase.id === selectedKnowledgeBaseId
-            ? {
-                ...knowledgeBase,
-                fileCount: knowledgeBase.fileCount + uploadedFiles.length,
-              }
-            : knowledgeBase
-        )
-      );
+      await loadKnowledgeBaseFiles(selectedKnowledgeBaseId);
     } catch (error) {
       setKnowledgeFileUploadError(
         error instanceof Error
@@ -948,25 +1016,7 @@ export default function Home() {
         );
       }
 
-      setKnowledgeBaseFiles((prev) =>
-        prev.filter(
-          (association) =>
-            !(
-              association.knowledgeBaseId === selectedKnowledgeBaseId &&
-              association.knowledgeFileId === fileId
-            )
-        )
-      );
-      setKnowledgeBases((prev) =>
-        prev.map((knowledgeBase) =>
-          knowledgeBase.id === selectedKnowledgeBaseId
-            ? {
-                ...knowledgeBase,
-                fileCount: Math.max(0, knowledgeBase.fileCount - 1),
-              }
-            : knowledgeBase
-        )
-      );
+      await loadKnowledgeBaseFiles(selectedKnowledgeBaseId);
     } catch (error) {
       setKnowledgeFileDetachError(
         error instanceof Error
@@ -1183,6 +1233,18 @@ export default function Home() {
       isCancelled = true;
     };
   }, [hasCheckedAuth]);
+
+  useEffect(() => {
+    if (!hasCheckedAuth || !selectedKnowledgeBaseId) {
+      return;
+    }
+
+    void loadKnowledgeBaseFiles(selectedKnowledgeBaseId);
+  }, [
+    hasCheckedAuth,
+    loadKnowledgeBaseFiles,
+    selectedKnowledgeBaseId,
+  ]);
 
   useEffect(() => {
     let isCancelled = false;
@@ -1733,7 +1795,9 @@ export default function Home() {
               </button>
               <button
                 type="button"
-                onClick={() => setIsFileManagerOpen(true)}
+                onClick={() => {
+                  void handleOpenFileManager();
+                }}
                 className="border border-[#aebdb7] bg-[#fcfdfb] px-3 py-2.5 text-xs font-semibold text-[#46514e] transition hover:border-[#176b62] hover:text-[#176b62]"
               >
                 文件 {selectedKnowledgeBaseFileCount}
@@ -2278,6 +2342,15 @@ export default function Home() {
                 </p>
               )}
 
+              {knowledgeFileLoadError && (
+                <p
+                  role="alert"
+                  className="mt-3 border-l-4 border-[#e36b4f] bg-[#fff1ed] px-4 py-3 text-sm text-[#9b3c29]"
+                >
+                  {knowledgeFileLoadError}
+                </p>
+              )}
+
               <div className="mt-6">
                 <div className="flex items-center justify-between gap-4">
                   <p className="font-utility text-[10px] font-semibold uppercase text-[#176b62]">
@@ -2289,7 +2362,11 @@ export default function Home() {
                 </div>
 
                 <div className="mt-2 divide-y divide-[#d5ded9] border-y border-[#cbd5d1]">
-                  {selectedKnowledgeFiles.length > 0 ? (
+                  {isLoadingKnowledgeFiles ? (
+                    <p className="py-7 text-center text-sm text-[#64716d]">
+                      正在读取文件...
+                    </p>
+                  ) : selectedKnowledgeFiles.length > 0 ? (
                     selectedKnowledgeFiles.map((file) => {
                       const usageCount = knowledgeBaseFiles.filter(
                         (association) =>
