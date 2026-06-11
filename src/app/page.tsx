@@ -24,7 +24,6 @@ type ChatSession = {
   id: string;
   title: string;
   messages: Message[];
-  isPersisted: boolean;
 };
 
 type KnowledgeBase = {
@@ -298,7 +297,6 @@ function toChatSession(value: unknown): ChatSession | null {
         ? conversation.title.trim()
         : "新对话",
     messages,
-    isPersisted: true,
   };
 }
 
@@ -1189,30 +1187,7 @@ export default function Home() {
           ? conversation.title.trim()
           : title,
       messages: [],
-      isPersisted: true,
     };
-  }
-
-  async function ensureBackendSession(session: ChatSession, title = session.title) {
-    if (session.isPersisted) {
-      return session;
-    }
-
-    const persistedSession = await createBackendSession(title);
-    const nextSession = {
-      ...persistedSession,
-      title: persistedSession.title || title,
-      messages: session.messages,
-    };
-
-    setSessions((prev) =>
-      prev.map((candidate) =>
-        candidate.id === session.id ? nextSession : candidate
-      )
-    );
-    setCurrentSessionId(nextSession.id);
-
-    return nextSession;
   }
 
   async function loadBackendSessions() {
@@ -1638,28 +1613,13 @@ export default function Home() {
       return;
     }
 
-    let activeSession = currentSession;
-
-    try {
-      activeSession = await ensureBackendSession(
-        currentSession,
-        buildSessionTitle(messageContent)
-      );
-      setPageError("");
-    } catch (error) {
-      setPageError(
-        error instanceof Error ? error.message : "创建对话失败，请稍后再试。"
-      );
-      return;
-    }
-
     const userMessage: Message = {
       role: "user",
       content: messageContent,
     };
 
-    const updatedMessages = [...activeSession.messages, userMessage];
-    const activeSessionId = activeSession.id;
+    const updatedMessages = [...currentSession.messages, userMessage];
+    const activeSessionId = currentSession.id;
 
     setSessions((prev) =>
       prev.map((session) =>

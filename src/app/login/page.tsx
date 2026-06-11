@@ -4,10 +4,15 @@ import { useRouter } from "next/navigation";
 import { type FormEvent, useState } from "react";
 import {
   AUTH_STORAGE_KEY,
+  buildAuthorizationHeader,
   getAuthErrorMessage,
   isAuthState,
   readAuthResponse,
 } from "@/lib/auth";
+
+const LEGACY_SESSION_STORAGE_KEY = "ai-learning-assistant-sessions";
+const LEGACY_CURRENT_SESSION_KEY =
+  "ai-learning-assistant-current-session";
 
 export default function LoginPage() {
   const router = useRouter();
@@ -51,7 +56,47 @@ export default function LoginPage() {
       }
 
       localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(data));
-      router.push("/");
+      localStorage.removeItem(LEGACY_SESSION_STORAGE_KEY);
+      localStorage.removeItem(LEGACY_CURRENT_SESSION_KEY);
+
+      const conversationResponse = await fetch("/api/chat/conversation", {
+        method: "POST",
+        headers: {
+          Authorization: buildAuthorizationHeader(data),
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          title: "新对话",
+        }),
+      });
+
+      if (!conversationResponse.ok) {
+        const errorText = await conversationResponse.text();
+        let message = "创建初始对话失败，请稍后再试。";
+
+        try {
+          const errorData = JSON.parse(errorText) as {
+            detail?: unknown;
+            error?: unknown;
+            message?: unknown;
+          };
+          const candidate =
+            errorData.detail || errorData.error || errorData.message;
+
+          if (typeof candidate === "string" && candidate.trim()) {
+            message = candidate.trim();
+          }
+        } catch {
+          if (errorText.trim()) {
+            message = errorText.trim();
+          }
+        }
+
+        localStorage.removeItem(AUTH_STORAGE_KEY);
+        throw new Error(message);
+      }
+
+      router.replace("/");
     } catch (loginError) {
       setError(
         loginError instanceof Error
