@@ -47,6 +47,7 @@ type KnowledgeFile = {
   size: number;
   fingerprint: string;
   status: "ready" | "processing";
+  usageCount: number | null;
 };
 
 type BackendKnowledgeFile = {
@@ -54,6 +55,7 @@ type BackendKnowledgeFile = {
   original_name?: unknown;
   size_bytes?: unknown;
   status?: unknown;
+  usage_count?: unknown;
 };
 
 type KnowledgeBaseFile = {
@@ -346,6 +348,7 @@ function toKnowledgeFile(
   }
 
   const size = Number(knowledgeFile.size_bytes);
+  const usageCount = Number(knowledgeFile.usage_count);
 
   return {
     id: knowledgeFile.id,
@@ -355,6 +358,7 @@ function toKnowledgeFile(
       ? getFileFingerprint(sourceFile)
       : knowledgeFile.id,
     status: knowledgeFile.status === "ready" ? "ready" : "processing",
+    usageCount: Number.isFinite(usageCount) ? usageCount : null,
   };
 }
 
@@ -658,6 +662,9 @@ export default function Home() {
   const [isLoadingKnowledgeFiles, setIsLoadingKnowledgeFiles] =
     useState(false);
   const [knowledgeFileLoadError, setKnowledgeFileLoadError] = useState("");
+  const [isLoadingReusableFiles, setIsLoadingReusableFiles] =
+    useState(false);
+  const [reusableFileLoadError, setReusableFileLoadError] = useState("");
   const [pageError, setPageError] = useState("");
   const [currentUsername, setCurrentUsername] = useState("");
   const [knowledgeBases, setKnowledgeBases] = useState<KnowledgeBase[]>([
@@ -772,10 +779,23 @@ export default function Home() {
           );
         const loadedFileIds = new Set(loadedFiles.map((file) => file.id));
 
-        setKnowledgeFiles((prev) => [
-          ...loadedFiles,
-          ...prev.filter((file) => !loadedFileIds.has(file.id)),
-        ]);
+        setKnowledgeFiles((prev) => {
+          const previousFilesById = new Map(
+            prev.map((file) => [file.id, file])
+          );
+          const mergedLoadedFiles = loadedFiles.map((file) => ({
+            ...file,
+            usageCount:
+              file.usageCount ??
+              previousFilesById.get(file.id)?.usageCount ??
+              null,
+          }));
+
+          return [
+            ...mergedLoadedFiles,
+            ...prev.filter((file) => !loadedFileIds.has(file.id)),
+          ];
+        });
         setKnowledgeBaseFiles((prev) => [
           ...prev.filter(
             (association) =>
@@ -809,9 +829,64 @@ export default function Home() {
     []
   );
 
+  const loadAllKnowledgeFiles = useCallback(async () => {
+    const authState = parseAuthState(localStorage.getItem(AUTH_STORAGE_KEY));
+
+    if (!authState) {
+      localStorage.removeItem(AUTH_STORAGE_KEY);
+      window.location.href = "/login";
+      return;
+    }
+
+    setIsLoadingReusableFiles(true);
+    setReusableFileLoadError("");
+
+    try {
+      const response = await fetch("/api/chat/knowledge-files", {
+        method: "GET",
+        headers: {
+          Authorization: buildAuthorizationHeader(authState),
+        },
+        cache: "no-store",
+      });
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(
+          getResponseErrorMessage(
+            errorText,
+            "读取用户文件列表失败，请稍后再试。"
+          )
+        );
+      }
+
+      const data = (await response.json()) as ListKnowledgeFilesResponse;
+      const fileValues = Array.isArray(data.files) ? data.files : [];
+      const loadedFiles = fileValues
+        .map((value) => toKnowledgeFile(value))
+        .filter(
+          (knowledgeFile): knowledgeFile is KnowledgeFile =>
+            knowledgeFile !== null
+        );
+
+      setKnowledgeFiles(loadedFiles);
+    } catch (error) {
+      setReusableFileLoadError(
+        error instanceof Error
+          ? error.message
+          : "读取用户文件列表失败，请稍后再试。"
+      );
+    } finally {
+      setIsLoadingReusableFiles(false);
+    }
+  }, []);
+
   async function handleOpenFileManager() {
     setIsFileManagerOpen(true);
-    await loadKnowledgeBaseFiles(selectedKnowledgeBaseId);
+    await Promise.all([
+      loadKnowledgeBaseFiles(selectedKnowledgeBaseId),
+      loadAllKnowledgeFiles(),
+    ]);
   }
 
   async function handleCreateKnowledgeBase() {
@@ -935,7 +1010,10 @@ export default function Home() {
         throw new Error("上传响应缺少有效的 files 数据。");
       }
 
-      await loadKnowledgeBaseFiles(selectedKnowledgeBaseId);
+      await Promise.all([
+        loadKnowledgeBaseFiles(selectedKnowledgeBaseId),
+        loadAllKnowledgeFiles(),
+      ]);
     } catch (error) {
       setKnowledgeFileUploadError(
         error instanceof Error
@@ -1016,7 +1094,10 @@ export default function Home() {
         );
       }
 
-      await loadKnowledgeBaseFiles(selectedKnowledgeBaseId);
+      await Promise.all([
+        loadKnowledgeBaseFiles(selectedKnowledgeBaseId),
+        loadAllKnowledgeFiles(),
+      ]);
     } catch (error) {
       setKnowledgeFileDetachError(
         error instanceof Error
@@ -2351,6 +2432,15 @@ export default function Home() {
                 </p>
               )}
 
+              {reusableFileLoadError && (
+                <p
+                  role="alert"
+                  className="mt-3 border-l-4 border-[#e36b4f] bg-[#fff1ed] px-4 py-3 text-sm text-[#9b3c29]"
+                >
+                  {reusableFileLoadError}
+                </p>
+              )}
+
               <div className="mt-6">
                 <div className="flex items-center justify-between gap-4">
                   <p className="font-utility text-[10px] font-semibold uppercase text-[#176b62]">
@@ -2368,10 +2458,12 @@ export default function Home() {
                     </p>
                   ) : selectedKnowledgeFiles.length > 0 ? (
                     selectedKnowledgeFiles.map((file) => {
-                      const usageCount = knowledgeBaseFiles.filter(
-                        (association) =>
-                          association.knowledgeFileId === file.id
-                      ).length;
+                      const usageCount =
+                        file.usageCount ??
+                        knowledgeBaseFiles.filter(
+                          (association) =>
+                            association.knowledgeFileId === file.id
+                        ).length;
 
                       return (
                         <div
@@ -2428,12 +2520,18 @@ export default function Home() {
                 </div>
 
                 <div className="mt-2 divide-y divide-[#d5ded9] border-y border-[#cbd5d1]">
-                  {reusableKnowledgeFiles.length > 0 ? (
+                  {isLoadingReusableFiles ? (
+                    <p className="py-7 text-center text-sm text-[#64716d]">
+                      正在读取可复用文件...
+                    </p>
+                  ) : reusableKnowledgeFiles.length > 0 ? (
                     reusableKnowledgeFiles.map((file) => {
-                      const usageCount = knowledgeBaseFiles.filter(
-                        (association) =>
-                          association.knowledgeFileId === file.id
-                      ).length;
+                      const usageCount =
+                        file.usageCount ??
+                        knowledgeBaseFiles.filter(
+                          (association) =>
+                            association.knowledgeFileId === file.id
+                        ).length;
 
                       return (
                         <div
