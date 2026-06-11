@@ -28,10 +28,15 @@ type KnowledgeBase = {
 
 type KnowledgeFile = {
   id: string;
-  knowledgeBaseId: string;
   name: string;
   size: number;
+  fingerprint: string;
   status: "ready" | "processing";
+};
+
+type KnowledgeBaseFile = {
+  knowledgeBaseId: string;
+  knowledgeFileId: string;
 };
 
 type BackendConversation = {
@@ -80,6 +85,10 @@ function formatFileSize(size: number) {
   }
 
   return `${(size / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function getFileFingerprint(file: File) {
+  return `${file.name}:${file.size}:${file.lastModified}`;
 }
 
 function buildSessionTitle(input: string) {
@@ -552,6 +561,9 @@ export default function Home() {
     DEFAULT_KNOWLEDGE_BASE_ID
   );
   const [knowledgeFiles, setKnowledgeFiles] = useState<KnowledgeFile[]>([]);
+  const [knowledgeBaseFiles, setKnowledgeBaseFiles] = useState<
+    KnowledgeBaseFile[]
+  >([]);
   const [isKnowledgeBaseManagerOpen, setIsKnowledgeBaseManagerOpen] =
     useState(false);
   const [isFileManagerOpen, setIsFileManagerOpen] = useState(false);
@@ -581,8 +593,19 @@ export default function Home() {
     knowledgeBases.find(
       (knowledgeBase) => knowledgeBase.id === selectedKnowledgeBaseId
     ) || knowledgeBases[0];
-  const selectedKnowledgeFiles = knowledgeFiles.filter(
-    (file) => file.knowledgeBaseId === selectedKnowledgeBaseId
+  const selectedKnowledgeFileIds = new Set(
+    knowledgeBaseFiles
+      .filter(
+        (association) =>
+          association.knowledgeBaseId === selectedKnowledgeBaseId
+      )
+      .map((association) => association.knowledgeFileId)
+  );
+  const selectedKnowledgeFiles = knowledgeFiles.filter((file) =>
+    selectedKnowledgeFileIds.has(file.id)
+  );
+  const reusableKnowledgeFiles = knowledgeFiles.filter(
+    (file) => !selectedKnowledgeFileIds.has(file.id)
   );
 
   function handleCreateKnowledgeBase() {
@@ -608,15 +631,53 @@ export default function Home() {
       return;
     }
 
-    const nextFiles = Array.from(files).map<KnowledgeFile>((file) => ({
-      id: createClientId(),
-      knowledgeBaseId: selectedKnowledgeBaseId,
-      name: file.name,
-      size: file.size,
-      status: "ready",
-    }));
+    const nextKnowledgeFiles = [...knowledgeFiles];
+    const knowledgeFileIds: string[] = [];
 
-    setKnowledgeFiles((prev) => [...nextFiles, ...prev]);
+    Array.from(files).forEach((file) => {
+      const fingerprint = getFileFingerprint(file);
+      const existingFile = nextKnowledgeFiles.find(
+        (knowledgeFile) => knowledgeFile.fingerprint === fingerprint
+      );
+
+      if (existingFile) {
+        knowledgeFileIds.push(existingFile.id);
+        return;
+      }
+
+      const knowledgeFile: KnowledgeFile = {
+        id: createClientId(),
+        name: file.name,
+        size: file.size,
+        fingerprint,
+        status: "ready",
+      };
+
+      nextKnowledgeFiles.unshift(knowledgeFile);
+      knowledgeFileIds.push(knowledgeFile.id);
+    });
+
+    setKnowledgeFiles(nextKnowledgeFiles);
+    setKnowledgeBaseFiles((prev) => {
+      const nextAssociations = [...prev];
+
+      knowledgeFileIds.forEach((knowledgeFileId) => {
+        const associationExists = nextAssociations.some(
+          (association) =>
+            association.knowledgeBaseId === selectedKnowledgeBaseId &&
+            association.knowledgeFileId === knowledgeFileId
+        );
+
+        if (!associationExists) {
+          nextAssociations.push({
+            knowledgeBaseId: selectedKnowledgeBaseId,
+            knowledgeFileId,
+          });
+        }
+      });
+
+      return nextAssociations;
+    });
     setIsFileManagerOpen(true);
 
     if (fileInputRef.current) {
@@ -624,8 +685,38 @@ export default function Home() {
     }
   }
 
+  function handleAttachKnowledgeFile(fileId: string) {
+    setKnowledgeBaseFiles((prev) => {
+      const associationExists = prev.some(
+        (association) =>
+          association.knowledgeBaseId === selectedKnowledgeBaseId &&
+          association.knowledgeFileId === fileId
+      );
+
+      if (associationExists) {
+        return prev;
+      }
+
+      return [
+        ...prev,
+        {
+          knowledgeBaseId: selectedKnowledgeBaseId,
+          knowledgeFileId: fileId,
+        },
+      ];
+    });
+  }
+
   function handleRemoveKnowledgeFile(fileId: string) {
-    setKnowledgeFiles((prev) => prev.filter((file) => file.id !== fileId));
+    setKnowledgeBaseFiles((prev) =>
+      prev.filter(
+        (association) =>
+          !(
+            association.knowledgeBaseId === selectedKnowledgeBaseId &&
+            association.knowledgeFileId === fileId
+          )
+      )
+    );
   }
 
   async function createBackendSession(title = "新对话") {
@@ -1676,8 +1767,9 @@ export default function Home() {
             <div className="px-6 py-5">
               <div className="divide-y divide-[#d5ded9] border-y border-[#cbd5d1]">
                 {knowledgeBases.map((knowledgeBase) => {
-                  const fileCount = knowledgeFiles.filter(
-                    (file) => file.knowledgeBaseId === knowledgeBase.id
+                  const fileCount = knowledgeBaseFiles.filter(
+                    (association) =>
+                      association.knowledgeBaseId === knowledgeBase.id
                   ).length;
                   const conversationCount =
                     knowledgeBase.id === DEFAULT_KNOWLEDGE_BASE_ID
@@ -1785,6 +1877,9 @@ export default function Home() {
                 <p className="mt-1 text-sm text-[#64716d]">
                   {selectedKnowledgeBase?.name || "默认知识库"}
                 </p>
+                <p className="mt-1 text-xs text-[#72807b]">
+                  文件只保存一次，可关联到多个知识库
+                </p>
               </div>
               <button
                 type="button"
@@ -1805,36 +1900,111 @@ export default function Home() {
                 选择文件上传
               </button>
 
-              <div className="mt-5 divide-y divide-[#d5ded9] border-y border-[#cbd5d1]">
-                {selectedKnowledgeFiles.length > 0 ? (
-                  selectedKnowledgeFiles.map((file) => (
-                    <div
-                      key={file.id}
-                      className="flex items-center justify-between gap-4 py-4"
-                    >
-                      <div className="min-w-0">
-                        <p className="truncate text-sm font-semibold text-[#17201f]">
-                          {file.name}
-                        </p>
-                        <p className="mt-1 text-xs text-[#72807b]">
-                          {formatFileSize(file.size)} ·{" "}
-                          {file.status === "processing" ? "处理中" : "已选择"}
-                        </p>
-                      </div>
-                      <button
-                        type="button"
-                        onClick={() => handleRemoveKnowledgeFile(file.id)}
-                        className="shrink-0 px-2 py-1 text-xs font-semibold text-[#72807b] transition hover:bg-[#fff1ed] hover:text-[#9b3c29]"
-                      >
-                        移除
-                      </button>
-                    </div>
-                  ))
-                ) : (
-                  <p className="py-8 text-center text-sm text-[#72807b]">
-                    暂无文件
+              <div className="mt-6">
+                <div className="flex items-center justify-between gap-4">
+                  <p className="font-utility text-[10px] font-semibold uppercase text-[#176b62]">
+                    当前知识库
                   </p>
-                )}
+                  <span className="font-utility text-[10px] text-[#72807b]">
+                    {String(selectedKnowledgeFiles.length).padStart(2, "0")}
+                  </span>
+                </div>
+
+                <div className="mt-2 divide-y divide-[#d5ded9] border-y border-[#cbd5d1]">
+                  {selectedKnowledgeFiles.length > 0 ? (
+                    selectedKnowledgeFiles.map((file) => {
+                      const usageCount = knowledgeBaseFiles.filter(
+                        (association) =>
+                          association.knowledgeFileId === file.id
+                      ).length;
+
+                      return (
+                        <div
+                          key={file.id}
+                          className="flex items-center justify-between gap-4 py-4"
+                        >
+                          <div className="min-w-0">
+                            <p className="truncate text-sm font-semibold text-[#17201f]">
+                              {file.name}
+                            </p>
+                            <p className="mt-1 text-xs text-[#72807b]">
+                              {formatFileSize(file.size)} ·{" "}
+                              {file.status === "processing"
+                                ? "处理中"
+                                : `${usageCount} 个知识库正在使用`}
+                            </p>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => handleRemoveKnowledgeFile(file.id)}
+                            className="shrink-0 px-2 py-1 text-xs font-semibold text-[#72807b] transition hover:bg-[#fff1ed] hover:text-[#9b3c29]"
+                          >
+                            解除关联
+                          </button>
+                        </div>
+                      );
+                    })
+                  ) : (
+                    <div className="py-7 text-center">
+                      <p className="text-sm text-[#64716d]">
+                        当前知识库还没有文件
+                      </p>
+                      <p className="mt-1 text-xs text-[#8a9692]">
+                        上传新文件，或从下方文件库添加
+                      </p>
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              <div className="mt-7">
+                <div className="flex items-center justify-between gap-4">
+                  <p className="font-utility text-[10px] font-semibold uppercase text-[#72807b]">
+                    可复用文件
+                  </p>
+                  <span className="font-utility text-[10px] text-[#72807b]">
+                    {String(reusableKnowledgeFiles.length).padStart(2, "0")}
+                  </span>
+                </div>
+
+                <div className="mt-2 divide-y divide-[#d5ded9] border-y border-[#cbd5d1]">
+                  {reusableKnowledgeFiles.length > 0 ? (
+                    reusableKnowledgeFiles.map((file) => {
+                      const usageCount = knowledgeBaseFiles.filter(
+                        (association) =>
+                          association.knowledgeFileId === file.id
+                      ).length;
+
+                      return (
+                        <div
+                          key={file.id}
+                          className="flex items-center justify-between gap-4 py-4"
+                        >
+                          <div className="min-w-0">
+                            <p className="truncate text-sm font-semibold text-[#17201f]">
+                              {file.name}
+                            </p>
+                            <p className="mt-1 text-xs text-[#72807b]">
+                              {formatFileSize(file.size)} · 已用于 {usageCount}{" "}
+                              个知识库
+                            </p>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => handleAttachKnowledgeFile(file.id)}
+                            className="shrink-0 bg-[#176b62] px-3 py-2 text-xs font-semibold text-white transition hover:bg-[#105149]"
+                          >
+                            添加
+                          </button>
+                        </div>
+                      );
+                    })
+                  ) : (
+                    <p className="py-7 text-center text-sm text-[#72807b]">
+                      暂无其他可复用文件
+                    </p>
+                  )}
+                </div>
               </div>
             </div>
           </section>
