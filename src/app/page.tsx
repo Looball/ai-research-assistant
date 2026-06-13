@@ -1714,17 +1714,29 @@ export default function Home() {
   }
 
   async function handleSubmit(overrideInput?: string) {
-    if (!currentSession || isCurrentSessionLoading || isCreatingSession) {
+    if (isCurrentSessionLoading || isCreatingSession) {
       return;
     }
 
     const messageContent = (overrideInput ?? input).trim();
 
     if (!messageContent) {
-      setSessionErrors((prev) => ({
-        ...prev,
-        [currentSession.id]: "请先在下方输入问题。",
-      }));
+      if (currentSession) {
+        setSessionErrors((prev) => ({
+          ...prev,
+          [currentSession.id]: "请先在下方输入问题。",
+        }));
+      } else {
+        setPageError("请先在下方输入问题。");
+      }
+      return;
+    }
+
+    if (
+      !selectedKnowledgeBaseId ||
+      selectedKnowledgeBaseId === DEFAULT_KNOWLEDGE_BASE_ID
+    ) {
+      setPageError("请先选择一个知识库。");
       return;
     }
 
@@ -1736,13 +1748,42 @@ export default function Home() {
       return;
     }
 
+    let activeSession = currentSession;
+
+    if (!activeSession) {
+      setIsCreatingSession(true);
+      setPageError("");
+
+      try {
+        const newSession = await createBackendSession(
+          selectedKnowledgeBaseId,
+          buildSessionTitle(messageContent)
+        );
+        activeSession = newSession;
+        setSessions((prev) => [newSession, ...prev]);
+        setCurrentSessionId(newSession.id);
+      } catch (error) {
+        setPageError(
+          error instanceof Error
+            ? error.message
+            : "创建对话失败，请稍后再试。"
+        );
+        return;
+      } finally {
+        setIsCreatingSession(false);
+      }
+    }
+
+    setPageError("");
+
     const userMessage: Message = {
       role: "user",
       content: messageContent,
     };
 
-    const updatedMessages = [...currentSession.messages, userMessage];
-    const activeSessionId = currentSession.id;
+    const updatedMessages = [...activeSession.messages, userMessage];
+    const activeSessionId = activeSession.id;
+    const activeKnowledgeBaseId = activeSession.knowledgeBaseId;
 
     setSessions((prev) =>
       prev.map((session) =>
@@ -1833,7 +1874,7 @@ export default function Home() {
         },
         body: JSON.stringify({
           conversation_id: activeSessionId,
-          knowledge_base_id: currentSession.knowledgeBaseId,
+          knowledge_base_id: activeKnowledgeBaseId,
           message: messageContent,
         }),
       });
@@ -2041,9 +2082,9 @@ export default function Home() {
 
           <div className="mt-2 min-h-0 min-w-0 flex-1 space-y-2 overflow-y-auto pr-1">
             {visibleSessions.length === 0 && (
-              <div className="border border-[#cbd5d1] bg-[#fcfdfb] px-4 py-5 text-center text-xs text-[#72807b]">
-                当前知识库暂无会话
-              </div>
+              <p className="px-1 py-2 text-xs text-[#7b8884]">
+                暂无会话，发送问题即可开始
+              </p>
             )}
             {visibleSessions.map((session) => {
               const isActive = session.id === currentSession?.id;
@@ -2199,6 +2240,14 @@ export default function Home() {
             className="research-scroll px-5 py-7 md:px-8 md:py-9 lg:min-h-0 lg:flex-1 lg:overflow-y-auto lg:overscroll-contain"
           >
             <div className="space-y-6">
+              {!currentSession && (
+                <div className="flex min-h-[240px] items-center justify-center text-center">
+                  <p className="text-sm text-[#7b8884]">
+                    输入问题，开始新的研究会话
+                  </p>
+                </div>
+              )}
+
               {currentSession?.messages.length === 0 && (
                 <div className="border-y border-[#cbd5d1] py-12 text-center">
                   <p className="font-utility text-[10px] font-semibold uppercase text-[#176b62]">
@@ -2334,11 +2383,18 @@ export default function Home() {
                   void handleSubmit();
                 }}
                 disabled={
-                  isCurrentSessionLoading || isCreatingSession || !currentSession
+                  isCurrentSessionLoading ||
+                  isCreatingSession ||
+                  !selectedKnowledgeBaseId ||
+                  selectedKnowledgeBaseId === DEFAULT_KNOWLEDGE_BASE_ID
                 }
                 className="h-12 shrink-0 bg-[#176b62] px-6 text-sm font-semibold text-white transition hover:bg-[#105149] disabled:bg-[#91aaa4] md:h-[104px] md:w-32"
               >
-                {isCurrentSessionLoading ? "思考中..." : "发送问题"}
+                {isCreatingSession
+                  ? "创建中..."
+                  : isCurrentSessionLoading
+                    ? "思考中..."
+                    : "发送问题"}
               </button>
             </div>
           </div>
