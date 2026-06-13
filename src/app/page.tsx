@@ -40,6 +40,7 @@ type BackendKnowledgeBase = {
   name?: unknown;
   is_default?: unknown;
   file_count?: unknown;
+  conversations?: unknown;
 };
 
 type KnowledgeFile = {
@@ -75,14 +76,6 @@ type CreateConversationResponse = {
   conversation?: BackendConversation;
   id?: unknown;
   title?: unknown;
-  answer?: string;
-  detail?: string;
-  error?: string;
-  message?: string;
-};
-
-type ListConversationsResponse = {
-  conversations?: unknown;
   answer?: string;
   detail?: string;
   error?: string;
@@ -723,6 +716,9 @@ export default function Home() {
     visibleSessions.find((session) => session.id === currentSessionId) ||
     visibleSessions[0] ||
     null;
+  const currentSessionMessageId = currentSession?.id || "";
+  const areCurrentSessionMessagesLoaded =
+    currentSession?.messagesLoaded ?? true;
   const isCurrentSessionLoading = currentSession
     ? Boolean(loadingSessions[currentSession.id])
     : false;
@@ -1225,45 +1221,6 @@ export default function Home() {
     };
   }
 
-  async function loadBackendSessions(knowledgeBaseId: string) {
-    const authState = parseAuthState(localStorage.getItem(AUTH_STORAGE_KEY));
-
-    if (!authState) {
-      localStorage.removeItem(AUTH_STORAGE_KEY);
-      window.location.href = "/login";
-      throw new Error("登录已失效，请重新登录。");
-    }
-
-    const response = await fetch(
-      `/api/chat/knowledge-bases/${encodeURIComponent(
-        knowledgeBaseId
-      )}/conversations`,
-      {
-        method: "GET",
-        headers: {
-          Authorization: buildAuthorizationHeader(authState),
-        },
-        cache: "no-store",
-      }
-    );
-
-    if (!response.ok) {
-      const errorText = await response.text();
-      throw new Error(
-        getResponseErrorMessage(errorText, "读取会话列表失败，请稍后再试。")
-      );
-    }
-
-    const data = (await response.json()) as ListConversationsResponse;
-    const conversations = Array.isArray(data.conversations)
-      ? data.conversations
-      : [];
-
-    return conversations
-      .map((conversation) => toChatSession(conversation, knowledgeBaseId))
-      .filter((session): session is ChatSession => session !== null);
-  }
-
   async function loadBackendMessages(conversationId: string) {
     const authState = parseAuthState(localStorage.getItem(AUTH_STORAGE_KEY));
 
@@ -1355,12 +1312,38 @@ export default function Home() {
       ? data.knowledge_bases
       : [];
 
-    return knowledgeBaseValues
-      .map(toKnowledgeBase)
-      .filter(
-        (knowledgeBase): knowledgeBase is KnowledgeBase =>
-          knowledgeBase !== null
-      );
+    const nextKnowledgeBases: KnowledgeBase[] = [];
+    const sessionMap = new Map<string, ChatSession>();
+
+    for (const value of knowledgeBaseValues) {
+      const knowledgeBase = toKnowledgeBase(value);
+
+      if (!knowledgeBase) {
+        continue;
+      }
+
+      nextKnowledgeBases.push(knowledgeBase);
+
+      const backendKnowledgeBase = value as BackendKnowledgeBase;
+      const conversations = Array.isArray(
+        backendKnowledgeBase.conversations
+      )
+        ? backendKnowledgeBase.conversations
+        : [];
+
+      for (const conversation of conversations) {
+        const session = toChatSession(conversation, knowledgeBase.id);
+
+        if (session) {
+          sessionMap.set(session.id, session);
+        }
+      }
+    }
+
+    return {
+      knowledgeBases: nextKnowledgeBases,
+      sessions: Array.from(sessionMap.values()),
+    };
   }
 
   useEffect(() => {
@@ -1384,71 +1367,6 @@ export default function Home() {
   }, []);
 
   useEffect(() => {
-    let isCancelled = false;
-
-    async function restoreSessions() {
-      try {
-        const nextSessions = await loadBackendSessions(
-          selectedKnowledgeBaseId
-        );
-
-        if (isCancelled) {
-          return;
-        }
-
-        setSessions((previousSessions) => [
-          ...previousSessions.filter(
-            (session) =>
-              session.knowledgeBaseId !== selectedKnowledgeBaseId
-          ),
-          ...nextSessions,
-        ]);
-        setCurrentSessionId(nextSessions[0]?.id || "");
-        setPageError("");
-
-        if (nextSessions[0] && !nextSessions[0].messagesLoaded) {
-          const firstSession = nextSessions[0];
-          const messages = await loadBackendMessages(firstSession.id);
-
-          if (isCancelled) {
-            return;
-          }
-
-          setSessions((previousSessions) =>
-            previousSessions.map((session) =>
-              session.id === firstSession.id
-                ? { ...session, messages, messagesLoaded: true }
-                : session
-            )
-          );
-        }
-      } catch (error) {
-        console.error("Failed to load saved sessions:", error);
-
-        if (!isCancelled) {
-          setPageError(
-            error instanceof Error
-              ? error.message
-              : "读取会话列表失败，请稍后再试。"
-          );
-        }
-      }
-    }
-
-    if (
-      hasCheckedAuth &&
-      selectedKnowledgeBaseId &&
-      selectedKnowledgeBaseId !== DEFAULT_KNOWLEDGE_BASE_ID
-    ) {
-      void restoreSessions();
-    }
-
-    return () => {
-      isCancelled = true;
-    };
-  }, [hasCheckedAuth, selectedKnowledgeBaseId]);
-
-  useEffect(() => {
     if (!hasCheckedAuth || !selectedKnowledgeBaseId) {
       return;
     }
@@ -1465,19 +1383,32 @@ export default function Home() {
 
     async function restoreKnowledgeBases() {
       try {
-        const nextKnowledgeBases = await loadBackendKnowledgeBases();
+        const {
+          knowledgeBases: nextKnowledgeBases,
+          sessions: nextSessions,
+        } = await loadBackendKnowledgeBases();
 
         if (isCancelled) {
           return;
         }
 
+        const defaultKnowledgeBaseId =
+          nextKnowledgeBases.find(
+            (knowledgeBase) => knowledgeBase.isDefault
+          )?.id ||
+          nextKnowledgeBases[0]?.id ||
+          "";
+
         setKnowledgeBases(nextKnowledgeBases);
-        setSelectedKnowledgeBaseId(
-          nextKnowledgeBases.find((knowledgeBase) => knowledgeBase.isDefault)
-            ?.id ||
-            nextKnowledgeBases[0]?.id ||
-            ""
+        setSessions(nextSessions);
+        setSelectedKnowledgeBaseId(defaultKnowledgeBaseId);
+        setCurrentSessionId(
+          nextSessions.find(
+            (session) =>
+              session.knowledgeBaseId === defaultKnowledgeBaseId
+          )?.id || ""
         );
+        setPageError("");
       } catch (error) {
         console.error("Failed to load knowledge bases:", error);
 
@@ -1499,6 +1430,59 @@ export default function Home() {
       isCancelled = true;
     };
   }, [hasCheckedAuth]);
+
+  useEffect(() => {
+    const selectedSessions = sessions.filter(
+      (session) => session.knowledgeBaseId === selectedKnowledgeBaseId
+    );
+    setCurrentSessionId((previousSessionId) =>
+      selectedSessions.some(
+        (session) => session.id === previousSessionId
+      )
+        ? previousSessionId
+        : selectedSessions[0]?.id || ""
+    );
+  }, [selectedKnowledgeBaseId, sessions]);
+
+  useEffect(() => {
+    let isCancelled = false;
+
+    if (currentSessionMessageId && !areCurrentSessionMessagesLoaded) {
+      const sessionId = currentSessionMessageId;
+
+      void loadBackendMessages(sessionId)
+        .then((messages) => {
+          if (isCancelled) {
+            return;
+          }
+
+          setSessions((previousSessions) =>
+            previousSessions.map((session) =>
+              session.id === sessionId
+                ? { ...session, messages, messagesLoaded: true }
+                : session
+            )
+          );
+        })
+        .catch((error) => {
+          if (isCancelled) {
+            return;
+          }
+
+          setSessionErrors((previousErrors) => ({
+            ...previousErrors,
+            [sessionId]:
+              error instanceof Error
+                ? error.message
+                : "读取会话消息失败，请稍后再试。",
+          }));
+        });
+    }
+
+    return () => {
+      isCancelled = true;
+    };
+  }, [areCurrentSessionMessagesLoaded, currentSessionMessageId]);
 
   useEffect(() => {
     const currentMessageCount = currentSession?.messages.length ?? 0;
