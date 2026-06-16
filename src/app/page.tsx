@@ -18,6 +18,13 @@ import {
 type Message = {
   role: "user" | "assistant";
   content: string;
+  sources?: ChatSource[];
+};
+
+type ChatSource = {
+  title: string;
+  content: string;
+  metadata: string;
 };
 
 type ChatSession = {
@@ -291,6 +298,150 @@ function getAssistantContent(value: unknown) {
   return typeof assistantMessage?.content === "string"
     ? assistantMessage.content
     : "";
+}
+
+function parseJsonValue(value: string) {
+  try {
+    return JSON.parse(value) as unknown;
+  } catch {
+    return value;
+  }
+}
+
+function getStringField(
+  value: Record<string, unknown>,
+  fieldNames: string[]
+) {
+  for (const fieldName of fieldNames) {
+    const fieldValue = value[fieldName];
+
+    if (typeof fieldValue === "string" && fieldValue.trim()) {
+      return fieldValue.trim();
+    }
+
+    if (typeof fieldValue === "number" && Number.isFinite(fieldValue)) {
+      return String(fieldValue);
+    }
+  }
+
+  return "";
+}
+
+function toChatSource(value: unknown, index: number): ChatSource | null {
+  if (typeof value === "string") {
+    const normalized = value.trim();
+
+    return normalized
+      ? {
+          title: `参考文档 ${index + 1}`,
+          content: normalized,
+          metadata: "",
+        }
+      : null;
+  }
+
+  if (typeof value !== "object" || value === null) {
+    return null;
+  }
+
+  const source = value as Record<string, unknown>;
+  const title =
+    getStringField(source, [
+      "title",
+      "file_name",
+      "filename",
+      "original_name",
+      "source",
+      "document",
+    ]) || `参考文档 ${index + 1}`;
+  const content = getStringField(source, [
+    "content",
+    "text",
+    "chunk",
+    "snippet",
+    "page_content",
+  ]);
+  const metadata = getStringField(source, [
+    "score",
+    "chunk_id",
+    "knowledge_file_id",
+    "created_at",
+  ]);
+
+  return {
+    title,
+    content,
+    metadata,
+  };
+}
+
+function hasSourceShape(value: Record<string, unknown>) {
+  return [
+    "title",
+    "file_name",
+    "filename",
+    "original_name",
+    "source",
+    "document",
+    "content",
+    "text",
+    "chunk",
+    "snippet",
+    "page_content",
+  ].some((fieldName) => fieldName in value);
+}
+
+function getChatSources(value: unknown) {
+  const parsedValue = typeof value === "string" ? parseJsonValue(value) : value;
+  const sourceValues = Array.isArray(parsedValue)
+    ? parsedValue
+    : typeof parsedValue === "object" && parsedValue !== null
+      ? Array.isArray((parsedValue as { sources?: unknown }).sources)
+        ? (parsedValue as { sources: unknown[] }).sources
+        : Array.isArray((parsedValue as { documents?: unknown }).documents)
+          ? (parsedValue as { documents: unknown[] }).documents
+          : Array.isArray((parsedValue as { refs?: unknown }).refs)
+            ? (parsedValue as { refs: unknown[] }).refs
+            : hasSourceShape(parsedValue as Record<string, unknown>)
+              ? [parsedValue]
+              : []
+      : [];
+
+  return sourceValues
+    .map(toChatSource)
+    .filter((source): source is ChatSource => source !== null);
+}
+
+function parseSseBlock(block: string) {
+  let event = "message";
+  const dataLines: string[] = [];
+
+  block.split(/\r?\n/).forEach((line) => {
+    if (!line || line.startsWith(":")) {
+      return;
+    }
+
+    if (line.startsWith("event:")) {
+      event = line.slice("event:".length).trim() || event;
+      return;
+    }
+
+    if (line.startsWith("data:")) {
+      dataLines.push(line.slice("data:".length).replace(/^ /, ""));
+    }
+  });
+
+  return {
+    event,
+    data: dataLines.join("\n"),
+  };
+}
+
+function getSseAnswerContent(data: string) {
+  const parsedData = parseJsonValue(data);
+  const answer = getAssistantContent(parsedData);
+
+  return answer || (typeof parsedData === "string" ? parsedData : "");
 }
 
 function removeLegacyInitialMessage(messages: Message[]) {
@@ -2146,6 +2297,41 @@ export default function Home() {
       );
     };
 
+    const setAssistantSources = (sources: ChatSource[]) => {
+      if (sources.length === 0) {
+        return;
+      }
+
+      setSessions((prev) =>
+        prev.map((session) => {
+          if (session.id !== activeSessionId) {
+            return session;
+          }
+
+          const messages = [...session.messages];
+          const lastMessage = messages[messages.length - 1];
+
+          if (lastMessage?.role === "assistant") {
+            messages[messages.length - 1] = {
+              ...lastMessage,
+              sources,
+            };
+          } else {
+            messages.push({
+              role: "assistant",
+              content: "",
+              sources,
+            });
+          }
+
+          return {
+            ...session,
+            messages,
+          };
+        })
+      );
+    };
+
     const setAssistantFallback = (content: string) => {
       setSessions((prev) =>
         prev.map((session) => {
@@ -2206,7 +2392,9 @@ export default function Home() {
       if (contentType.includes("application/json")) {
         const data = (await response.json()) as unknown;
         const answer = getAssistantContent(data);
+        const sources = getChatSources(data);
 
+        setAssistantSources(sources);
         setAssistantFallback(answer || "模型暂时没有返回内容。");
         return;
       }
@@ -2220,6 +2408,43 @@ export default function Home() {
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
       let streamedAnswer = "";
+      let sseBuffer = "";
+      const isSseStream = contentType.includes("text/event-stream");
+
+      const handleSseBlock = (block: string) => {
+        const { event, data } = parseSseBlock(block);
+
+        if (event === "sources") {
+          setAssistantSources(getChatSources(data));
+          return false;
+        }
+
+        if (event === "answer") {
+          const answerContent = getSseAnswerContent(data);
+
+          if (answerContent) {
+            streamedAnswer += answerContent;
+            appendAssistantContent(answerContent);
+          }
+
+          return false;
+        }
+
+        if (event === "done") {
+          return true;
+        }
+
+        if (data) {
+          const answerContent = getSseAnswerContent(data);
+
+          if (answerContent) {
+            streamedAnswer += answerContent;
+            appendAssistantContent(answerContent);
+          }
+        }
+
+        return false;
+      };
 
       while (true) {
         const { done, value } = await reader.read();
@@ -2230,6 +2455,34 @@ export default function Home() {
 
         const chunk = decoder.decode(value, { stream: true });
 
+        if (chunk && isSseStream) {
+          sseBuffer += chunk;
+
+          while (true) {
+            const separatorIndex = sseBuffer.search(/\r?\n\r?\n/);
+
+            if (separatorIndex === -1) {
+              break;
+            }
+
+            const block = sseBuffer.slice(0, separatorIndex);
+            const separatorMatch = sseBuffer
+              .slice(separatorIndex)
+              .match(/^\r?\n\r?\n/);
+            sseBuffer = sseBuffer.slice(
+              separatorIndex + (separatorMatch?.[0].length || 2)
+            );
+
+            if (handleSseBlock(block)) {
+              await reader.cancel();
+              break;
+            }
+          }
+
+          await waitForNextPaint();
+          continue;
+        }
+
         if (chunk) {
           streamedAnswer += chunk;
           appendAssistantContent(chunk);
@@ -2239,9 +2492,16 @@ export default function Home() {
 
       const finalChunk = decoder.decode();
 
-      if (finalChunk) {
+      if (finalChunk && isSseStream) {
+        sseBuffer += finalChunk;
+      } else if (finalChunk) {
         streamedAnswer += finalChunk;
         appendAssistantContent(finalChunk);
+        await waitForNextPaint();
+      }
+
+      if (isSseStream && sseBuffer.trim()) {
+        handleSseBlock(sseBuffer.trim());
         await waitForNextPaint();
       }
 
@@ -2606,6 +2866,40 @@ export default function Home() {
                         }
                         isUserMessage={message.role === "user"}
                       />
+
+                      {message.role === "assistant" &&
+                        message.sources &&
+                        message.sources.length > 0 && (
+                          <div className="mt-4 border-t border-[#d6dedb] pt-3">
+                            <p className="font-utility text-[10px] font-semibold uppercase text-[#64716d]">
+                              Sources
+                            </p>
+                            <div className="mt-2 space-y-2">
+                              {message.sources.map((source, sourceIndex) => (
+                                <div
+                                  key={`${messageKey}-source-${sourceIndex}`}
+                                  className="border border-[#d5ded9] bg-[#fcfdfb] px-3 py-2 text-xs text-[#46514e]"
+                                >
+                                  <div className="flex items-start justify-between gap-3">
+                                    <p className="min-w-0 truncate font-semibold text-[#17201f]">
+                                      {source.title}
+                                    </p>
+                                    {source.metadata && (
+                                      <span className="font-utility shrink-0 text-[10px] text-[#72807b]">
+                                        {source.metadata}
+                                      </span>
+                                    )}
+                                  </div>
+                                  {source.content && (
+                                    <p className="mt-1 max-h-10 overflow-hidden leading-5 text-[#64716d]">
+                                      {source.content}
+                                    </p>
+                                  )}
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        )}
 
                       {message.role === "assistant" && message.content && (
                         <div className="mt-4 flex justify-end border-t border-[#d6dedb] pt-3">

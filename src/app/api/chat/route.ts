@@ -16,7 +16,7 @@ export async function POST(request: Request) {
   try {
     const body = await request.text();
     const upstreamHeaders = new Headers({
-      Accept: "text/plain",
+      Accept: "text/event-stream",
       "Content-Type": request.headers.get("Content-Type") || "application/json",
     });
     const authorization = request.headers.get("Authorization");
