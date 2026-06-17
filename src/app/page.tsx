@@ -55,7 +55,7 @@ type KnowledgeFile = {
   name: string;
   size: number;
   fingerprint: string;
-  status: "ready" | "processing";
+  status: "ready" | "processing" | "pending";
   usageCount: number | null;
 };
 
@@ -416,12 +416,55 @@ function toChatSource(value: unknown, index: number): ChatSource | null {
     "snippet",
     "page_content",
   ]);
-  const metadata = getStringField(source, [
-    "score",
-    "chunk_id",
+
+  const metadataParts: string[] = [];
+  const chunkIndex = source["chunk_index"] ?? source["chunk_id"];
+  const rerankScore = source["rerank_score"] ?? source["score"];
+  const retrievalSources = source["retrieval_sources"];
+  const createdAt = source["created_at"];
+
+  if (
+    (typeof chunkIndex === "number" && Number.isFinite(chunkIndex)) ||
+    (typeof chunkIndex === "string" && chunkIndex.trim())
+  ) {
+    const chunkNum =
+      typeof chunkIndex === "number" ? chunkIndex : Number(chunkIndex);
+    metadataParts.push(
+      `片段 #${Number.isFinite(chunkNum) ? chunkNum + 1 : chunkIndex}`
+    );
+  }
+
+  if (
+    typeof rerankScore === "number" &&
+    Number.isFinite(rerankScore)
+  ) {
+    metadataParts.push(`相关性 ${rerankScore.toFixed(4)}`);
+  }
+
+  if (typeof createdAt === "string" && createdAt.trim()) {
+    metadataParts.push(createdAt.trim());
+  }
+
+  if (
+    retrievalSources !== undefined &&
+    retrievalSources !== null &&
+    !metadataParts.length
+  ) {
+    try {
+      metadataParts.push(JSON.stringify(retrievalSources));
+    } catch {
+      // ignore unstringifiable value
+    }
+  }
+
+  const legacyMetadata = getStringField(source, [
     "knowledge_file_id",
-    "created_at",
   ]);
+
+  const metadata =
+    metadataParts.length > 0
+      ? metadataParts.join(" · ")
+      : legacyMetadata;
 
   return {
     title,
@@ -600,7 +643,11 @@ function toKnowledgeFile(
     fingerprint: sourceFile
       ? getFileFingerprint(sourceFile)
       : knowledgeFile.id,
-    status: knowledgeFile.status === "ready" ? "ready" : "processing",
+    status: knowledgeFile.status === "ready"
+      ? "ready"
+      : knowledgeFile.status === "pending"
+        ? "pending"
+        : "processing",
     usageCount: Number.isFinite(usageCount) ? usageCount : null,
   };
 }
@@ -994,6 +1041,7 @@ export default function Home() {
     useState("");
   const [attachingKnowledgeFileId, setAttachingKnowledgeFileId] =
     useState("");
+  const [deletingVectorFileId, setDeletingVectorFileId] = useState("");
   const [knowledgeFileAttachError, setKnowledgeFileAttachError] =
     useState("");
   const [isLoadingKnowledgeFiles, setIsLoadingKnowledgeFiles] =
@@ -1693,6 +1741,58 @@ export default function Home() {
     }
   }
 
+  async function handleDeleteKnowledgeFileVectors(fileId: string) {
+    if (!fileId || deletingVectorFileId) {
+      return;
+    }
+
+    const authState = parseAuthState(localStorage.getItem(AUTH_STORAGE_KEY));
+
+    if (!authState) {
+      localStorage.removeItem(AUTH_STORAGE_KEY);
+      window.location.href = "/login";
+      return;
+    }
+
+    setDeletingVectorFileId(fileId);
+    setVectorIndexError("");
+    setVectorIndexMessage("");
+
+    try {
+      const response = await fetch(
+        `/api/chat/knowledge-files/${encodeURIComponent(fileId)}/vectors`,
+        {
+          method: "DELETE",
+          headers: {
+            Authorization: buildAuthorizationHeader(authState),
+          },
+        }
+      );
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(
+          getResponseErrorMessage(
+            errorText,
+            "删除文件向量失败，请稍后再试。",
+            response.status
+          )
+        );
+      }
+
+      setVectorIndexMessage("文件向量已删除，可重新向量化。");
+      await refreshKnowledgeFiles();
+    } catch (error) {
+      setVectorIndexError(
+        error instanceof Error
+          ? error.message
+          : "删除文件向量失败，请稍后再试。"
+      );
+    } finally {
+      setDeletingVectorFileId("");
+    }
+  }
+
   async function handleIndexKnowledgeBase() {
     if (
       !selectedKnowledgeBaseId ||
@@ -2325,7 +2425,19 @@ export default function Home() {
 
   async function handleCopyMessage(messageKey: string, content: string) {
     try {
-      await navigator.clipboard.writeText(content);
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(content);
+      } else {
+        const textarea = document.createElement("textarea");
+        textarea.value = content;
+        textarea.style.position = "fixed";
+        textarea.style.opacity = "0";
+        document.body.appendChild(textarea);
+        textarea.select();
+        document.execCommand("copy");
+        document.body.removeChild(textarea);
+      }
+
       setCopiedMessageKey(messageKey);
 
       window.setTimeout(() => {
@@ -2335,6 +2447,27 @@ export default function Home() {
       }, 1500);
     } catch (error) {
       console.error("Failed to copy message:", error);
+
+      try {
+        const textarea = document.createElement("textarea");
+        textarea.value = content;
+        textarea.style.position = "fixed";
+        textarea.style.opacity = "0";
+        document.body.appendChild(textarea);
+        textarea.select();
+        document.execCommand("copy");
+        document.body.removeChild(textarea);
+
+        setCopiedMessageKey(messageKey);
+
+        window.setTimeout(() => {
+          setCopiedMessageKey((current) =>
+            current === messageKey ? "" : current
+          );
+        }, 1500);
+      } catch (fallbackError) {
+        console.error("Fallback copy also failed:", fallbackError);
+      }
     }
   }
 
@@ -2600,6 +2733,22 @@ export default function Home() {
         }
 
         if (event === "done") {
+          const parsedData = parseJsonValue(data);
+          const doneSources = getChatSources(parsedData);
+          setAssistantSources(doneSources);
+
+          const doneAnswer = getAssistantContent(parsedData);
+
+          if (doneAnswer) {
+            if (!streamedAnswer) {
+              appendAssistantContent(doneAnswer);
+            } else if (doneAnswer !== streamedAnswer) {
+              setAssistantFallback(doneAnswer);
+            }
+          } else if (!streamedAnswer) {
+            setAssistantFallback("模型暂时没有返回内容。");
+          }
+
           return true;
         }
 
@@ -3073,6 +3222,7 @@ export default function Home() {
                       {message.role === "assistant" && message.content && (
                         <div className="mt-4 flex justify-end border-t border-[#d6dedb] pt-3">
                           <button
+                            type="button"
                             onClick={() =>
                               handleCopyMessage(messageKey, message.content)
                             }
@@ -3560,6 +3710,24 @@ export default function Home() {
                             </p>
                           </div>
                           <div className="flex shrink-0 items-center gap-2">
+                            {file.status !== "pending" && (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  void handleDeleteKnowledgeFileVectors(file.id);
+                                }}
+                                disabled={
+                                  isFileIndexing ||
+                                  isIndexingKnowledgeBase ||
+                                  Boolean(deletingVectorFileId)
+                                }
+                                className="px-2 py-1 text-xs font-semibold text-[#9b3c29] transition hover:bg-[#fff1ed] disabled:cursor-not-allowed disabled:text-[#aab3b0]"
+                              >
+                                {deletingVectorFileId === file.id
+                                  ? "删除向量中..."
+                                  : "删除向量"}
+                              </button>
+                            )}
                             <button
                               type="button"
                               onClick={() => {
@@ -3643,6 +3811,24 @@ export default function Home() {
                             </p>
                           </div>
                           <div className="flex shrink-0 items-center gap-2">
+                            {file.status !== "pending" && (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  void handleDeleteKnowledgeFileVectors(file.id);
+                                }}
+                                disabled={
+                                  isFileIndexing ||
+                                  isIndexingKnowledgeBase ||
+                                  Boolean(deletingVectorFileId)
+                                }
+                                className="px-2 py-1 text-xs font-semibold text-[#9b3c29] transition hover:bg-[#fff1ed] disabled:cursor-not-allowed disabled:text-[#aab3b0]"
+                              >
+                                {deletingVectorFileId === file.id
+                                  ? "删除向量中..."
+                                  : "删除向量"}
+                              </button>
+                            )}
                             <button
                               type="button"
                               onClick={() => {

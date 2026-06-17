@@ -50,3 +50,40 @@ export async function POST(
     );
   }
 }
+
+export async function DELETE(
+  request: Request,
+  context: RouteContext<"/api/chat/knowledge-files/[knowledgeFileId]/vectors">
+) {
+  try {
+    const { knowledgeFileId } = await context.params;
+    const headers = new Headers({ Accept: "application/json" });
+    const authorization = request.headers.get("Authorization");
+
+    if (authorization) {
+      headers.set("Authorization", authorization);
+    }
+
+    const response = await fetch(getBackendUrl(knowledgeFileId), {
+      method: "DELETE",
+      headers,
+      cache: "no-store",
+    });
+    const responseText = await response.text();
+
+    return new NextResponse(responseText, {
+      status: response.status,
+      headers: {
+        "Content-Type":
+          response.headers.get("Content-Type") || "application/json",
+      },
+    });
+  } catch (error) {
+    console.error("Backend file vector delete proxy error:", error);
+
+    return NextResponse.json(
+      { detail: "连接后端删除文件向量接口失败，请确认后端服务已启动。" },
+      { status: 502 }
+    );
+  }
+}
