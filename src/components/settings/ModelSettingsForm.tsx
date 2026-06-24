@@ -10,28 +10,27 @@ import {
 } from "@/lib/auth";
 import {
   DEFAULT_USER_LLM_SETTINGS,
+  FALLBACK_PROVIDER_PRESETS,
   getSettingsMessage,
   isSuccessfulResponse,
   parseUserLLMSettings,
+  parseProviderPresets,
   toUserLLMSettingsPayload,
   type CredentialMode,
+  type ModelProviderPreset,
   type UserLLMSettings,
 } from "@/lib/user-settings";
 
-const providers = [
-  { value: "deepseek", label: "DeepSeek", models: ["deepseek-chat", "deepseek-reasoner"] },
-  { value: "qwen", label: "通义千问", models: ["qwen-turbo", "qwen-plus", "qwen-max"] },
-  { value: "kimi", label: "Kimi", models: ["moonshot-v1-8k", "kimi-k2"] },
-  { value: "zhipu", label: "智谱", models: ["glm-4-flash", "glm-4-plus"] },
-  { value: "doubao", label: "豆包", models: ["doubao-seed-1-6-250615"] },
-  { value: "minimax", label: "MiniMax", models: ["MiniMax-Text-01"] },
-  { value: "custom", label: "自定义兼容服务", models: [] },
-] as const;
+const CUSTOM_PROVIDER_PRESET: ModelProviderPreset = {
+  value: "custom",
+  label: "自定义兼容服务",
+  models: [],
+};
 
 type RequestState = "idle" | "loading" | "success" | "error";
 
-function getDefaultModel(provider: string) {
-  return providers.find((item) => item.value === provider)?.models[0] || "";
+function getDefaultModel(provider: string, presets: ModelProviderPreset[]) {
+  return presets.find((item) => item.value === provider)?.models[0] || "";
 }
 
 function getResponseData(response: Response) {
@@ -45,14 +44,17 @@ export function ModelSettingsForm() {
   );
   const [apiKey, setApiKey] = useState("");
   const [showApiKey, setShowApiKey] = useState(false);
+  const [providerPresets, setProviderPresets] = useState<ModelProviderPreset[]>(
+    [...FALLBACK_PROVIDER_PRESETS, CUSTOM_PROVIDER_PRESET]
+  );
   const [isLoading, setIsLoading] = useState(true);
   const [saveState, setSaveState] = useState<RequestState>("idle");
   const [testState, setTestState] = useState<RequestState>("idle");
   const [notice, setNotice] = useState("");
 
   const provider = useMemo(
-    () => providers.find((item) => item.value === settings.provider),
-    [settings.provider]
+    () => providerPresets.find((item) => item.value === settings.provider),
+    [providerPresets, settings.provider]
   );
   const modelCandidates = provider?.models || [];
   const isCustomProvider = settings.provider === "custom";
@@ -92,6 +94,20 @@ export function ModelSettingsForm() {
         if (!isCancelled) {
           setSettings(nextSettings);
         }
+
+        const providersResponse = await fetch("/api/settings/providers", {
+          headers: { Authorization: authorization },
+          cache: "no-store",
+        });
+        const providersData = await getResponseData(providersResponse);
+
+        if (providersResponse.ok) {
+          const presets = parseProviderPresets(providersData);
+
+          if (presets && !isCancelled) {
+            setProviderPresets([...presets, CUSTOM_PROVIDER_PRESET]);
+          }
+        }
       } catch (error) {
         if (!isCancelled) {
           setNotice(
@@ -123,7 +139,7 @@ export function ModelSettingsForm() {
     setSettings((current) => ({
       ...current,
       provider: providerValue,
-      model: getDefaultModel(providerValue),
+      model: getDefaultModel(providerValue, providerPresets),
       baseUrl: providerValue === "custom" ? current.baseUrl : "",
     }));
     setNotice("");
@@ -260,7 +276,7 @@ export function ModelSettingsForm() {
           <section className="grid gap-5 md:grid-cols-2" aria-label="模型参数">
             <label className="font-utility text-[10px] font-semibold uppercase tracking-[0.12em] text-[var(--ink-muted)]">厂商
               <select value={settings.provider} onChange={(event) => updateProvider(event.target.value)} className="research-focus mt-2 w-full border border-[var(--line)] bg-white px-3 py-3 text-sm normal-case tracking-normal text-[var(--foreground)]">
-                {providers.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}
+                {providerPresets.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}
               </select>
             </label>
             <label className="font-utility text-[10px] font-semibold uppercase tracking-[0.12em] text-[var(--ink-muted)]">模型名
