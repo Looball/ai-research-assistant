@@ -20,6 +20,12 @@ export type ModelProviderPreset = {
   enabled: boolean;
 };
 
+export type SettingsTestResult = {
+  message: string;
+  models: string[];
+  modelListAvailable: boolean;
+};
+
 export const FALLBACK_PROVIDER_PRESETS: ModelProviderPreset[] = [
   { value: "deepseek", label: "DeepSeek", baseUrl: "https://api.deepseek.com/v1", requiresBaseUrl: false, enabled: true },
   { value: "qwen", label: "通义千问", baseUrl: "https://dashscope.aliyuncs.com/compatible-mode/v1", requiresBaseUrl: false, enabled: true },
@@ -144,7 +150,7 @@ export function toUserLLMSettingsPayload(
   return {
     credential_mode: "user" as const,
     provider: settings.provider.trim(),
-    model: settings.model.trim(),
+    ...(settings.model.trim() ? { model: settings.model.trim() } : {}),
     ...(requiresBaseUrl ? { base_url: settings.baseUrl.trim() } : {}),
     ...(trimmedApiKey ? { api_key: trimmedApiKey } : {}),
     ...generationOptions,
@@ -169,4 +175,23 @@ export function getSettingsMessage(value: unknown, fallback: string) {
 
 export function isSuccessfulResponse(value: unknown) {
   return isRecord(value) && value.success === true;
+}
+
+export function parseSettingsTestResult(value: unknown): SettingsTestResult | null {
+  if (!isRecord(value) || value.success !== true) {
+    return null;
+  }
+
+  const models = Array.isArray(value.models)
+    ? value.models
+        .filter((model): model is string => typeof model === "string")
+        .map((model) => model.trim())
+        .filter(Boolean)
+    : [];
+
+  return {
+    message: readString(value.message, "模型连接测试成功"),
+    models,
+    modelListAvailable: value.model_list_available === true,
+  };
 }

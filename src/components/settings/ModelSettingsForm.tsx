@@ -13,6 +13,7 @@ import {
   FALLBACK_PROVIDER_PRESETS,
   getSettingsMessage,
   isSuccessfulResponse,
+  parseSettingsTestResult,
   parseUserLLMSettings,
   parseProviderPresets,
   toUserLLMSettingsPayload,
@@ -34,6 +35,7 @@ export function ModelSettingsForm() {
   );
   const [apiKey, setApiKey] = useState("");
   const [showApiKey, setShowApiKey] = useState(false);
+  const [modelCandidates, setModelCandidates] = useState<string[]>([]);
   const [providerPresets, setProviderPresets] = useState<ModelProviderPreset[]>(
     FALLBACK_PROVIDER_PRESETS
   );
@@ -138,11 +140,12 @@ export function ModelSettingsForm() {
       model: "",
       baseUrl: nextProvider?.baseUrl || "",
     }));
+    setModelCandidates([]);
     setNotice("");
   }
 
-  function getPayload() {
-    if (isUserKeyMode && !settings.model.trim()) {
+  function getPayload(requireModel: boolean) {
+    if (requireModel && isUserKeyMode && !settings.model.trim()) {
       throw new Error("请输入模型名称。");
     }
 
@@ -175,7 +178,7 @@ export function ModelSettingsForm() {
     setNotice("");
 
     try {
-      const payload = getPayload();
+      const payload = getPayload(false);
       const authState = parseAuthState(localStorage.getItem(AUTH_STORAGE_KEY));
 
       if (!authState) {
@@ -193,12 +196,19 @@ export function ModelSettingsForm() {
       });
       const data = await getResponseData(response);
 
-      if (!response.ok || !isSuccessfulResponse(data)) {
+      const testResult = parseSettingsTestResult(data);
+
+      if (!response.ok || !isSuccessfulResponse(data) || !testResult) {
         throw new Error(getSettingsMessage(data, "连接测试失败，请检查配置。"));
       }
 
+      setModelCandidates(testResult.models);
       setTestState("success");
-      setNotice(getSettingsMessage(data, "连接测试通过。"));
+      setNotice(
+        testResult.modelListAvailable && !settings.model.trim()
+          ? `已获取 ${testResult.models.length} 个模型，请选择后再测试连接。`
+          : testResult.message
+      );
     } catch (error) {
       setTestState("error");
       setNotice(error instanceof Error ? error.message : "连接测试失败，请检查配置。");
@@ -211,7 +221,7 @@ export function ModelSettingsForm() {
     setNotice("");
 
     try {
-      const payload = getPayload();
+      const payload = getPayload(true);
       const authState = parseAuthState(localStorage.getItem(AUTH_STORAGE_KEY));
 
       if (!authState) {
@@ -290,7 +300,9 @@ export function ModelSettingsForm() {
               </select>
             </label>
             <label className="font-utility text-[10px] font-semibold uppercase tracking-[0.12em] text-[var(--ink-muted)]">模型名
-              <input value={settings.model} onChange={(event) => setSettings((current) => ({ ...current, model: event.target.value }))} placeholder="输入模型名称" className="research-focus mt-2 w-full border border-[var(--line)] bg-white px-3 py-3 text-sm normal-case tracking-normal text-[var(--foreground)]" />
+              <input list="discovered-models" value={settings.model} onChange={(event) => setSettings((current) => ({ ...current, model: event.target.value }))} placeholder="先获取模型列表，或直接输入模型名称" className="research-focus mt-2 w-full border border-[var(--line)] bg-white px-3 py-3 text-sm normal-case tracking-normal text-[var(--foreground)]" />
+              <datalist id="discovered-models">{modelCandidates.map((model) => <option key={model} value={model} />)}</datalist>
+              {modelCandidates.length > 0 && <span className="mt-2 block text-xs normal-case tracking-normal text-[var(--research)]">已获取 {modelCandidates.length} 个可选模型。</span>}
             </label>
           </section>}
 
@@ -328,7 +340,7 @@ export function ModelSettingsForm() {
           <div className="border-t border-[var(--line)] pt-6">
             <p role="status" className={`min-h-5 text-sm ${saveState === "error" || testState === "error" ? "text-[#9b3c29]" : "text-[var(--ink-muted)]"}`}>{notice || "保存后，工作台的下一次对话会使用当前账号的模型设置。"}</p>
             <div className="mt-4 flex flex-wrap gap-3">
-              <button type="button" onClick={() => void handleTest()} disabled={testState === "loading" || saveState === "loading"} className="border border-[var(--research)] px-5 py-3 text-sm font-semibold text-[var(--research)] transition hover:bg-[var(--paper-muted)] disabled:border-[var(--line)] disabled:text-[var(--ink-muted)]">{testState === "loading" ? "测试中..." : "测试连接"}</button>
+              <button type="button" onClick={() => void handleTest()} disabled={testState === "loading" || saveState === "loading"} className="border border-[var(--research)] px-5 py-3 text-sm font-semibold text-[var(--research)] transition hover:bg-[var(--paper-muted)] disabled:border-[var(--line)] disabled:text-[var(--ink-muted)]">{testState === "loading" ? "测试中..." : isUserKeyMode && !settings.model.trim() ? "获取模型列表" : "测试连接"}</button>
               <button type="submit" disabled={saveState === "loading" || testState === "loading"} className="bg-[var(--research)] px-5 py-3 text-sm font-semibold text-white transition hover:bg-[var(--research-dark)] disabled:bg-[var(--line)]">{saveState === "loading" ? "保存中..." : "保存设置"}</button>
             </div>
           </div>
