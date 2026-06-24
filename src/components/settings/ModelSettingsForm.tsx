@@ -29,6 +29,21 @@ function getResponseData(response: Response) {
   return response.json().catch(() => null) as Promise<unknown>;
 }
 
+function applyProviderCredentials(
+  settings: UserLLMSettings,
+  provider: ModelProviderPreset | undefined
+) {
+  if (!provider) {
+    return settings;
+  }
+
+  return {
+    ...settings,
+    hasApiKey: provider.hasApiKey,
+    apiKeyHint: provider.apiKeyHint,
+  };
+}
+
 export function ModelSettingsForm() {
   const [username, setUsername] = useState("");
   const [settings, setSettings] = useState<UserLLMSettings>(
@@ -52,18 +67,52 @@ export function ModelSettingsForm() {
   );
   const requiresBaseUrl = provider?.requiresBaseUrl === true;
   const isUserKeyMode = settings.credentialMode === "user";
+  const hasSavedApiKey = provider?.hasApiKey ?? settings.hasApiKey;
+  const apiKeyHint = provider?.apiKeyHint ?? settings.apiKeyHint;
 
-  async function refreshSettings(authorization: string) {
+  function redirectToLogin() {
+    localStorage.removeItem(AUTH_STORAGE_KEY);
+    window.location.href = "/login";
+  }
+
+  async function refreshSettingsAndProviders(authorization: string) {
     try {
-      const response = await fetch("/api/settings", {
-        headers: { Authorization: authorization },
-        cache: "no-store",
-      });
-      const data = await getResponseData(response);
+      const [response, providersResponse] = await Promise.all([
+        fetch("/api/settings", {
+          headers: { Authorization: authorization },
+          cache: "no-store",
+        }),
+        fetch("/api/settings/providers", {
+          headers: { Authorization: authorization },
+          cache: "no-store",
+        }),
+      ]);
+
+      if (response.status === 401 || providersResponse.status === 401) {
+        redirectToLogin();
+        return;
+      }
+
+      const [data, providersData] = await Promise.all([
+        getResponseData(response),
+        getResponseData(providersResponse),
+      ]);
       const nextSettings = response.ok ? parseUserLLMSettings(data) : null;
+      const presets = providersResponse.ok
+        ? parseProviderPresets(providersData)
+        : null;
 
       if (nextSettings) {
-        setSettings(nextSettings);
+        setSettings(
+          applyProviderCredentials(
+            nextSettings,
+            presets?.find((item) => item.value === nextSettings.provider)
+          )
+        );
+      }
+
+      if (presets) {
+        setProviderPresets(presets);
       }
     } catch {
       // 测试状态提示优先于刷新失败，不额外暴露后端错误信息。
@@ -75,8 +124,7 @@ export function ModelSettingsForm() {
     const authState = parseAuthState(localStorage.getItem(AUTH_STORAGE_KEY));
 
     if (!authState) {
-      localStorage.removeItem(AUTH_STORAGE_KEY);
-      window.location.href = "/login";
+      redirectToLogin();
       return;
     }
 
@@ -100,6 +148,11 @@ export function ModelSettingsForm() {
           getResponseData(providersResponse),
         ]);
 
+        if (response.status === 401 || providersResponse.status === 401) {
+          redirectToLogin();
+          return;
+        }
+
         if (!response.ok) {
           throw new Error(getSettingsMessage(data, "读取设置失败，请稍后重试。"));
         }
@@ -115,7 +168,12 @@ export function ModelSettingsForm() {
           : null;
 
         if (!isCancelled) {
-          setSettings(nextSettings);
+          setSettings(
+            applyProviderCredentials(
+              nextSettings,
+              presets?.find((item) => item.value === nextSettings.provider)
+            )
+          );
 
           if (presets) {
             setProviderPresets(presets);
@@ -158,8 +216,8 @@ export function ModelSettingsForm() {
       provider: providerValue,
       model: "",
       baseUrl: nextProvider?.baseUrl || "",
-      hasApiKey: false,
-      apiKeyHint: null,
+      hasApiKey: nextProvider?.hasApiKey ?? false,
+      apiKeyHint: nextProvider?.apiKeyHint ?? null,
     }));
     setApiKey("");
     setShowApiKey(false);
@@ -177,7 +235,7 @@ export function ModelSettingsForm() {
       throw new Error("自定义兼容服务需要填写 API 地址。");
     }
 
-    if (isUserKeyMode && !settings.hasApiKey && !apiKey.trim()) {
+    if (isUserKeyMode && !hasSavedApiKey && !apiKey.trim()) {
       throw new Error("请输入 API Key 后再继续。");
     }
 
@@ -208,7 +266,7 @@ export function ModelSettingsForm() {
       const authState = parseAuthState(localStorage.getItem(AUTH_STORAGE_KEY));
 
       if (!authState) {
-        window.location.href = "/login";
+        redirectToLogin();
         return;
       }
 
@@ -223,6 +281,11 @@ export function ModelSettingsForm() {
         ...(isUserKeyMode ? { body: JSON.stringify(payload) } : {}),
       });
       const data = await getResponseData(response);
+
+      if (response.status === 401) {
+        redirectToLogin();
+        return;
+      }
 
       const testResult = parseSettingsTestResult(data);
 
@@ -256,7 +319,7 @@ export function ModelSettingsForm() {
       setShowApiKey(false);
 
       if (authorization) {
-        await refreshSettings(authorization);
+        await refreshSettingsAndProviders(authorization);
       }
     }
   }
@@ -281,31 +344,33 @@ export function ModelSettingsForm() {
       const authState = parseAuthState(localStorage.getItem(AUTH_STORAGE_KEY));
 
       if (!authState) {
-        window.location.href = "/login";
+        redirectToLogin();
         return;
       }
 
+      const authorization = buildAuthorizationHeader(authState);
       const response = await fetch("/api/settings", {
         method: "PATCH",
         headers: {
-          Authorization: buildAuthorizationHeader(authState),
+          Authorization: authorization,
           "Content-Type": "application/json",
         },
         body: JSON.stringify(payload),
       });
       const data = await getResponseData(response);
 
+      if (response.status === 401) {
+        redirectToLogin();
+        return;
+      }
+
       if (!response.ok || !isSuccessfulResponse(data)) {
         throw new Error(getSettingsMessage(data, "保存设置失败，请稍后重试。"));
       }
 
-      const nextSettings = parseUserLLMSettings(data);
-
-      if (nextSettings) {
-        setSettings(nextSettings);
-      }
       setSaveState("success");
       setNotice(getSettingsMessage(data, "设置已保存。"));
+      await refreshSettingsAndProviders(authorization);
     } catch (error) {
       setSaveState("error");
       setNotice(error instanceof Error ? error.message : "保存设置失败，请稍后重试。");
@@ -379,9 +444,9 @@ export function ModelSettingsForm() {
           </label>}
 
           {isUserKeyMode && <section className="border border-[var(--line)] bg-[var(--paper-muted)] p-5" aria-labelledby="api-key-title">
-            <div className="flex items-baseline justify-between gap-4"><p id="api-key-title" className="font-utility text-[10px] font-semibold uppercase tracking-[0.12em] text-[var(--ink-muted)]">API Key</p>{settings.hasApiKey && <span className="text-xs font-semibold text-[var(--research)]">已保存 · {settings.apiKeyHint ?? "已保存"}</span>}</div>
+            <div className="flex items-baseline justify-between gap-4"><p id="api-key-title" className="font-utility text-[10px] font-semibold uppercase tracking-[0.12em] text-[var(--ink-muted)]">API Key</p>{hasSavedApiKey && <span className="text-xs font-semibold text-[var(--research)]">已保存 · {apiKeyHint ?? "已保存"}</span>}</div>
             <div className="mt-3 flex border border-[var(--line)] bg-white focus-within:border-[var(--research)] focus-within:ring-3 focus-within:ring-[var(--research)]/15">
-              <input type={showApiKey ? "text" : "password"} value={apiKey} onChange={(event) => setApiKey(event.target.value)} autoComplete="off" placeholder={settings.hasApiKey ? "已保存；填写可替换现有 Key" : "请输入 API Key"} className="min-w-0 flex-1 bg-transparent px-3 py-3 text-sm text-[var(--foreground)] outline-none" />
+              <input type={showApiKey ? "text" : "password"} value={apiKey} onChange={(event) => setApiKey(event.target.value)} autoComplete="off" placeholder={hasSavedApiKey ? "已保存；填写可替换现有 Key" : "请输入 API Key"} className="min-w-0 flex-1 bg-transparent px-3 py-3 text-sm text-[var(--foreground)] outline-none" />
               <button type="button" onClick={() => setShowApiKey((current) => !current)} disabled={!apiKey} title={apiKey ? undefined : "已保存的 Key 不可查看"} className="border-l border-[var(--line)] px-4 text-xs font-semibold text-[var(--ink-muted)] hover:bg-[var(--paper-muted)] disabled:cursor-not-allowed disabled:text-[var(--line)]">{apiKey ? (showApiKey ? "隐藏" : "显示") : "不可查看"}</button>
             </div>
             <p className="mt-2 text-xs leading-5 text-[var(--ink-muted)]">密钥只会在保存或测试时发送到后端，页面不会回显或存入浏览器。</p>

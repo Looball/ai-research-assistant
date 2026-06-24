@@ -19,6 +19,8 @@ export type ModelProviderPreset = {
   baseUrl: string;
   requiresBaseUrl: boolean;
   enabled: boolean;
+  hasApiKey: boolean;
+  apiKeyHint: string | null;
 };
 
 export type SettingsTestResult = {
@@ -28,12 +30,12 @@ export type SettingsTestResult = {
 };
 
 export const FALLBACK_PROVIDER_PRESETS: ModelProviderPreset[] = [
-  { value: "deepseek", label: "DeepSeek", baseUrl: "https://api.deepseek.com/v1", requiresBaseUrl: false, enabled: true },
-  { value: "qwen", label: "通义千问", baseUrl: "https://dashscope.aliyuncs.com/compatible-mode/v1", requiresBaseUrl: false, enabled: true },
-  { value: "zhipu", label: "智谱", baseUrl: "", requiresBaseUrl: false, enabled: true },
-  { value: "kimi", label: "Kimi", baseUrl: "", requiresBaseUrl: false, enabled: true },
-  { value: "doubao", label: "豆包", baseUrl: "", requiresBaseUrl: false, enabled: true },
-  { value: "minimax", label: "MiniMax", baseUrl: "", requiresBaseUrl: false, enabled: true },
+  { value: "deepseek", label: "DeepSeek", baseUrl: "https://api.deepseek.com/v1", requiresBaseUrl: false, enabled: true, hasApiKey: false, apiKeyHint: null },
+  { value: "qwen", label: "通义千问", baseUrl: "https://dashscope.aliyuncs.com/compatible-mode/v1", requiresBaseUrl: false, enabled: true, hasApiKey: false, apiKeyHint: null },
+  { value: "zhipu", label: "智谱", baseUrl: "", requiresBaseUrl: false, enabled: true, hasApiKey: false, apiKeyHint: null },
+  { value: "kimi", label: "Kimi", baseUrl: "", requiresBaseUrl: false, enabled: true, hasApiKey: false, apiKeyHint: null },
+  { value: "doubao", label: "豆包", baseUrl: "", requiresBaseUrl: false, enabled: true, hasApiKey: false, apiKeyHint: null },
+  { value: "minimax", label: "MiniMax", baseUrl: "", requiresBaseUrl: false, enabled: true, hasApiKey: false, apiKeyHint: null },
 ];
 
 export const DEFAULT_USER_LLM_SETTINGS: UserLLMSettings = {
@@ -61,6 +63,11 @@ function readNumber(value: unknown, fallback: number) {
   return typeof value === "number" && Number.isFinite(value) ? value : fallback;
 }
 
+function readApiKeyHint(value: unknown) {
+  const hint = readString(value).trim();
+  return hint || null;
+}
+
 function toProviderPreset(value: unknown): ModelProviderPreset | null {
   if (!isRecord(value)) {
     return null;
@@ -78,6 +85,8 @@ function toProviderPreset(value: unknown): ModelProviderPreset | null {
     baseUrl: readString(value.base_url),
     requiresBaseUrl: value.requires_base_url === true,
     enabled: value.enabled !== false,
+    hasApiKey: value.has_api_key === true,
+    apiKeyHint: readApiKeyHint(value.api_key_hint),
   };
 }
 
@@ -121,10 +130,7 @@ export function parseUserLLMSettings(value: unknown): UserLLMSettings | null {
     model: readString(settings.model, DEFAULT_USER_LLM_SETTINGS.model),
     baseUrl: readString(settings.base_url),
     hasApiKey: settings.has_api_key === true,
-    apiKeyHint: (() => {
-      const hint = readString(settings.api_key_hint).trim();
-      return hint || null;
-    })(),
+    apiKeyHint: readApiKeyHint(settings.api_key_hint),
     temperature: readNumber(settings.temperature, DEFAULT_USER_LLM_SETTINGS.temperature),
     maxTokens: readNumber(settings.max_tokens, DEFAULT_USER_LLM_SETTINGS.maxTokens),
     timeoutSeconds: readNumber(settings.timeout_seconds, DEFAULT_USER_LLM_SETTINGS.timeoutSeconds),
