@@ -158,7 +158,11 @@ export function ModelSettingsForm() {
       provider: providerValue,
       model: "",
       baseUrl: nextProvider?.baseUrl || "",
+      hasApiKey: false,
+      apiKeyHint: null,
     }));
+    setApiKey("");
+    setShowApiKey(false);
     setModelCandidates([]);
     setIsCustomModel(false);
     setNotice("");
