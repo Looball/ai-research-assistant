@@ -21,7 +21,8 @@ async function proxyRequest(
     headers.set("Authorization", authorization);
   }
 
-  const body = method === "GET" ? undefined : await request.text();
+  const requestBody = method === "GET" ? undefined : await request.text();
+  const body = requestBody?.trim() ? requestBody : undefined;
 
   if (body !== undefined) {
     headers.set(

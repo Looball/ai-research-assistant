@@ -6,21 +6,27 @@ export type UserLLMSettings = {
   model: string;
   baseUrl: string;
   hasApiKey: boolean;
+  temperature: number;
+  maxTokens: number;
+  timeoutSeconds: number;
+  maxRetries: number;
 };
 
 export type ModelProviderPreset = {
   value: string;
   label: string;
-  models: string[];
+  baseUrl: string;
+  requiresBaseUrl: boolean;
+  enabled: boolean;
 };
 
 export const FALLBACK_PROVIDER_PRESETS: ModelProviderPreset[] = [
-  { value: "deepseek", label: "DeepSeek", models: ["deepseek-chat", "deepseek-reasoner"] },
-  { value: "qwen", label: "通义千问", models: ["qwen-turbo", "qwen-plus", "qwen-max"] },
-  { value: "kimi", label: "Kimi", models: ["moonshot-v1-8k", "kimi-k2"] },
-  { value: "zhipu", label: "智谱", models: ["glm-4-flash", "glm-4-plus"] },
-  { value: "doubao", label: "豆包", models: ["doubao-seed-1-6-250615"] },
-  { value: "minimax", label: "MiniMax", models: ["MiniMax-Text-01"] },
+  { value: "deepseek", label: "DeepSeek", baseUrl: "https://api.deepseek.com/v1", requiresBaseUrl: false, enabled: true },
+  { value: "qwen", label: "通义千问", baseUrl: "https://dashscope.aliyuncs.com/compatible-mode/v1", requiresBaseUrl: false, enabled: true },
+  { value: "zhipu", label: "智谱", baseUrl: "", requiresBaseUrl: false, enabled: true },
+  { value: "kimi", label: "Kimi", baseUrl: "", requiresBaseUrl: false, enabled: true },
+  { value: "doubao", label: "豆包", baseUrl: "", requiresBaseUrl: false, enabled: true },
+  { value: "minimax", label: "MiniMax", baseUrl: "", requiresBaseUrl: false, enabled: true },
 ];
 
 export const DEFAULT_USER_LLM_SETTINGS: UserLLMSettings = {
@@ -29,6 +35,10 @@ export const DEFAULT_USER_LLM_SETTINGS: UserLLMSettings = {
   model: "deepseek-chat",
   baseUrl: "",
   hasApiKey: false,
+  temperature: 0.2,
+  maxTokens: 8000,
+  timeoutSeconds: 60,
+  maxRetries: 2,
 };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -39,16 +49,8 @@ function readString(value: unknown, fallback = "") {
   return typeof value === "string" ? value : fallback;
 }
 
-function readModelName(value: unknown) {
-  if (typeof value === "string") {
-    return value.trim();
-  }
-
-  if (!isRecord(value)) {
-    return "";
-  }
-
-  return readString(value.value, readString(value.id, readString(value.model, readString(value.name)))).trim();
+function readNumber(value: unknown, fallback: number) {
+  return typeof value === "number" && Number.isFinite(value) ? value : fallback;
 }
 
 function toProviderPreset(value: unknown): ModelProviderPreset | null {
@@ -62,14 +64,12 @@ function toProviderPreset(value: unknown): ModelProviderPreset | null {
     return null;
   }
 
-  const models = Array.isArray(value.models)
-    ? value.models.map(readModelName).filter(Boolean)
-    : [];
-
   return {
     value: provider,
     label: readString(value.label, readString(value.display_name, readString(value.name, provider))).trim(),
-    models,
+    baseUrl: readString(value.base_url),
+    requiresBaseUrl: value.requires_base_url === true,
+    enabled: value.enabled !== false,
   };
 }
 
@@ -113,21 +113,41 @@ export function parseUserLLMSettings(value: unknown): UserLLMSettings | null {
     model: readString(settings.model, DEFAULT_USER_LLM_SETTINGS.model),
     baseUrl: readString(settings.base_url),
     hasApiKey: settings.has_api_key === true,
+    temperature: readNumber(settings.temperature, DEFAULT_USER_LLM_SETTINGS.temperature),
+    maxTokens: readNumber(settings.max_tokens, DEFAULT_USER_LLM_SETTINGS.maxTokens),
+    timeoutSeconds: readNumber(settings.timeout_seconds, DEFAULT_USER_LLM_SETTINGS.timeoutSeconds),
+    maxRetries: readNumber(settings.max_retries, DEFAULT_USER_LLM_SETTINGS.maxRetries),
   };
 }
 
 export function toUserLLMSettingsPayload(
   settings: UserLLMSettings,
-  apiKey: string
+  apiKey: string,
+  requiresBaseUrl: boolean
 ) {
   const trimmedApiKey = apiKey.trim();
 
+  const generationOptions = {
+    temperature: settings.temperature,
+    max_tokens: settings.maxTokens,
+    timeout_seconds: settings.timeoutSeconds,
+    max_retries: settings.maxRetries,
+  };
+
+  if (settings.credentialMode === "platform") {
+    return {
+      credential_mode: "platform" as const,
+      ...generationOptions,
+    };
+  }
+
   return {
-    credential_mode: settings.credentialMode,
+    credential_mode: "user" as const,
     provider: settings.provider.trim(),
     model: settings.model.trim(),
-    base_url: settings.provider === "custom" ? settings.baseUrl.trim() : null,
+    ...(requiresBaseUrl ? { base_url: settings.baseUrl.trim() } : {}),
     ...(trimmedApiKey ? { api_key: trimmedApiKey } : {}),
+    ...generationOptions,
   };
 }
 

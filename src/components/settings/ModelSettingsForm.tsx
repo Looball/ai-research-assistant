@@ -21,17 +21,7 @@ import {
   type UserLLMSettings,
 } from "@/lib/user-settings";
 
-const CUSTOM_PROVIDER_PRESET: ModelProviderPreset = {
-  value: "custom",
-  label: "自定义兼容服务",
-  models: [],
-};
-
 type RequestState = "idle" | "loading" | "success" | "error";
-
-function getDefaultModel(provider: string, presets: ModelProviderPreset[]) {
-  return presets.find((item) => item.value === provider)?.models[0] || "";
-}
 
 function getResponseData(response: Response) {
   return response.json().catch(() => null) as Promise<unknown>;
@@ -45,7 +35,7 @@ export function ModelSettingsForm() {
   const [apiKey, setApiKey] = useState("");
   const [showApiKey, setShowApiKey] = useState(false);
   const [providerPresets, setProviderPresets] = useState<ModelProviderPreset[]>(
-    [...FALLBACK_PROVIDER_PRESETS, CUSTOM_PROVIDER_PRESET]
+    FALLBACK_PROVIDER_PRESETS
   );
   const [isLoading, setIsLoading] = useState(true);
   const [saveState, setSaveState] = useState<RequestState>("idle");
@@ -56,8 +46,7 @@ export function ModelSettingsForm() {
     () => providerPresets.find((item) => item.value === settings.provider),
     [providerPresets, settings.provider]
   );
-  const modelCandidates = provider?.models || [];
-  const isCustomProvider = settings.provider === "custom";
+  const requiresBaseUrl = provider?.requiresBaseUrl === true;
   const isUserKeyMode = settings.credentialMode === "user";
 
   useEffect(() => {
@@ -75,11 +64,20 @@ export function ModelSettingsForm() {
 
     async function loadSettings() {
       try {
-        const response = await fetch("/api/settings", {
-          headers: { Authorization: authorization },
-          cache: "no-store",
-        });
-        const data = await getResponseData(response);
+        const [response, providersResponse] = await Promise.all([
+          fetch("/api/settings", {
+            headers: { Authorization: authorization },
+            cache: "no-store",
+          }),
+          fetch("/api/settings/providers", {
+            headers: { Authorization: authorization },
+            cache: "no-store",
+          }),
+        ]);
+        const [data, providersData] = await Promise.all([
+          getResponseData(response),
+          getResponseData(providersResponse),
+        ]);
 
         if (!response.ok) {
           throw new Error(getSettingsMessage(data, "读取设置失败，请稍后重试。"));
@@ -91,21 +89,15 @@ export function ModelSettingsForm() {
           throw new Error("后端设置响应格式无效，请联系管理员。");
         }
 
+        const presets = providersResponse.ok
+          ? parseProviderPresets(providersData)
+          : null;
+
         if (!isCancelled) {
           setSettings(nextSettings);
-        }
 
-        const providersResponse = await fetch("/api/settings/providers", {
-          headers: { Authorization: authorization },
-          cache: "no-store",
-        });
-        const providersData = await getResponseData(providersResponse);
-
-        if (providersResponse.ok) {
-          const presets = parseProviderPresets(providersData);
-
-          if (presets && !isCancelled) {
-            setProviderPresets([...presets, CUSTOM_PROVIDER_PRESET]);
+          if (presets) {
+            setProviderPresets(presets);
           }
         }
       } catch (error) {
@@ -136,21 +128,25 @@ export function ModelSettingsForm() {
   }
 
   function updateProvider(providerValue: string) {
+    const nextProvider = providerPresets.find(
+      (preset) => preset.value === providerValue
+    );
+
     setSettings((current) => ({
       ...current,
       provider: providerValue,
-      model: getDefaultModel(providerValue, providerPresets),
-      baseUrl: providerValue === "custom" ? current.baseUrl : "",
+      model: "",
+      baseUrl: nextProvider?.baseUrl || "",
     }));
     setNotice("");
   }
 
   function getPayload() {
-    if (!settings.model.trim()) {
+    if (isUserKeyMode && !settings.model.trim()) {
       throw new Error("请输入模型名称。");
     }
 
-    if (isCustomProvider && !settings.baseUrl.trim()) {
+    if (isUserKeyMode && requiresBaseUrl && !settings.baseUrl.trim()) {
       throw new Error("自定义兼容服务需要填写 API 地址。");
     }
 
@@ -158,7 +154,20 @@ export function ModelSettingsForm() {
       throw new Error("请输入 API Key 后再继续。");
     }
 
-    return toUserLLMSettingsPayload(settings, apiKey);
+    if (
+      settings.temperature < 0 ||
+      settings.temperature > 2 ||
+      settings.maxTokens < 1 ||
+      settings.maxTokens > 100000 ||
+      settings.timeoutSeconds <= 0 ||
+      settings.timeoutSeconds > 600 ||
+      settings.maxRetries < 0 ||
+      settings.maxRetries > 10
+    ) {
+      throw new Error("请检查生成参数的取值范围。");
+    }
+
+    return toUserLLMSettingsPayload(settings, apiKey, requiresBaseUrl);
   }
 
   async function handleTest() {
@@ -178,9 +187,9 @@ export function ModelSettingsForm() {
         method: "POST",
         headers: {
           Authorization: buildAuthorizationHeader(authState),
-          "Content-Type": "application/json",
+          ...(isUserKeyMode ? { "Content-Type": "application/json" } : {}),
         },
-        body: JSON.stringify(payload),
+        ...(isUserKeyMode ? { body: JSON.stringify(payload) } : {}),
       });
       const data = await getResponseData(response);
 
@@ -224,10 +233,11 @@ export function ModelSettingsForm() {
         throw new Error(getSettingsMessage(data, "保存设置失败，请稍后重试。"));
       }
 
-      setSettings((current) => ({
-        ...current,
-        hasApiKey: current.credentialMode === "user" ? current.hasApiKey || Boolean(apiKey.trim()) : false,
-      }));
+      const nextSettings = parseUserLLMSettings(data);
+
+      if (nextSettings) {
+        setSettings(nextSettings);
+      }
       setApiKey("");
       setSaveState("success");
       setNotice(getSettingsMessage(data, "设置已保存。"));
@@ -273,19 +283,18 @@ export function ModelSettingsForm() {
             </div>
           </section>
 
-          <section className="grid gap-5 md:grid-cols-2" aria-label="模型参数">
+          {isUserKeyMode && <section className="grid gap-5 md:grid-cols-2" aria-label="模型参数">
             <label className="font-utility text-[10px] font-semibold uppercase tracking-[0.12em] text-[var(--ink-muted)]">厂商
               <select value={settings.provider} onChange={(event) => updateProvider(event.target.value)} className="research-focus mt-2 w-full border border-[var(--line)] bg-white px-3 py-3 text-sm normal-case tracking-normal text-[var(--foreground)]">
-                {providerPresets.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}
+                {providerPresets.map((item) => <option key={item.value} value={item.value} disabled={!item.enabled}>{item.label}{item.enabled ? "" : "（暂不可用）"}</option>)}
               </select>
             </label>
             <label className="font-utility text-[10px] font-semibold uppercase tracking-[0.12em] text-[var(--ink-muted)]">模型名
-              <input list="model-candidates" value={settings.model} onChange={(event) => setSettings((current) => ({ ...current, model: event.target.value }))} placeholder="输入模型名称" className="research-focus mt-2 w-full border border-[var(--line)] bg-white px-3 py-3 text-sm normal-case tracking-normal text-[var(--foreground)]" />
-              <datalist id="model-candidates">{modelCandidates.map((model) => <option key={model} value={model} />)}</datalist>
+              <input value={settings.model} onChange={(event) => setSettings((current) => ({ ...current, model: event.target.value }))} placeholder="输入模型名称" className="research-focus mt-2 w-full border border-[var(--line)] bg-white px-3 py-3 text-sm normal-case tracking-normal text-[var(--foreground)]" />
             </label>
-          </section>
+          </section>}
 
-          {isCustomProvider && <label className="font-utility block text-[10px] font-semibold uppercase tracking-[0.12em] text-[var(--ink-muted)]">API 地址
+          {isUserKeyMode && requiresBaseUrl && <label className="font-utility block text-[10px] font-semibold uppercase tracking-[0.12em] text-[var(--ink-muted)]">API 地址
             <input type="url" value={settings.baseUrl} onChange={(event) => setSettings((current) => ({ ...current, baseUrl: event.target.value }))} placeholder="https://api.example.com/v1" className="research-focus mt-2 w-full border border-[var(--line)] bg-white px-3 py-3 text-sm normal-case tracking-normal text-[var(--foreground)]" />
           </label>}
 
@@ -297,6 +306,24 @@ export function ModelSettingsForm() {
             </div>
             <p className="mt-2 text-xs leading-5 text-[var(--ink-muted)]">密钥只会在保存或测试时发送到后端，页面不会回显或存入浏览器。</p>
           </section>}
+
+          <section className="border-t border-[var(--line)] pt-7" aria-labelledby="generation-title">
+            <div className="flex items-baseline justify-between gap-4"><p id="generation-title" className="font-utility text-[10px] font-semibold uppercase tracking-[0.14em] text-[var(--ink-muted)]">生成控制</p><span className="text-xs text-[var(--ink-muted)]">平台模式仅调整此区域</span></div>
+            <div className="mt-4 grid gap-4 sm:grid-cols-2">
+              <label className="font-utility text-[10px] font-semibold uppercase tracking-[0.1em] text-[var(--ink-muted)]">Temperature
+                <input type="number" min="0" max="2" step="0.1" value={settings.temperature} onChange={(event) => setSettings((current) => ({ ...current, temperature: Number(event.target.value) }))} className="research-focus mt-2 w-full border border-[var(--line)] bg-white px-3 py-3 text-sm normal-case tracking-normal text-[var(--foreground)]" />
+              </label>
+              <label className="font-utility text-[10px] font-semibold uppercase tracking-[0.1em] text-[var(--ink-muted)]">最大输出 Token
+                <input type="number" min="1" max="100000" step="1" value={settings.maxTokens} onChange={(event) => setSettings((current) => ({ ...current, maxTokens: Number(event.target.value) }))} className="research-focus mt-2 w-full border border-[var(--line)] bg-white px-3 py-3 text-sm normal-case tracking-normal text-[var(--foreground)]" />
+              </label>
+              <label className="font-utility text-[10px] font-semibold uppercase tracking-[0.1em] text-[var(--ink-muted)]">超时（秒）
+                <input type="number" min="1" max="600" step="1" value={settings.timeoutSeconds} onChange={(event) => setSettings((current) => ({ ...current, timeoutSeconds: Number(event.target.value) }))} className="research-focus mt-2 w-full border border-[var(--line)] bg-white px-3 py-3 text-sm normal-case tracking-normal text-[var(--foreground)]" />
+              </label>
+              <label className="font-utility text-[10px] font-semibold uppercase tracking-[0.1em] text-[var(--ink-muted)]">最大重试次数
+                <input type="number" min="0" max="10" step="1" value={settings.maxRetries} onChange={(event) => setSettings((current) => ({ ...current, maxRetries: Number(event.target.value) }))} className="research-focus mt-2 w-full border border-[var(--line)] bg-white px-3 py-3 text-sm normal-case tracking-normal text-[var(--foreground)]" />
+              </label>
+            </div>
+          </section>
 
           <div className="border-t border-[var(--line)] pt-6">
             <p role="status" className={`min-h-5 text-sm ${saveState === "error" || testState === "error" ? "text-[#9b3c29]" : "text-[var(--ink-muted)]"}`}>{notice || "保存后，工作台的下一次对话会使用当前账号的模型设置。"}</p>
