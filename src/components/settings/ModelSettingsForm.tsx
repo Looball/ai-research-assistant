@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { type FormEvent, useEffect, useMemo, useState } from "react";
+import { type FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import {
   AUTH_STORAGE_KEY,
   buildAuthorizationHeader,
@@ -14,6 +14,7 @@ import {
   getSettingsMessage,
   isSuccessfulResponse,
   parseSettingsTestResult,
+  parseProviderModels,
   parseUserLLMSettings,
   parseProviderPresets,
   toUserLLMSettingsPayload,
@@ -60,6 +61,8 @@ export function ModelSettingsForm() {
   const [saveState, setSaveState] = useState<RequestState>("idle");
   const [testState, setTestState] = useState<RequestState>("idle");
   const [notice, setNotice] = useState("");
+  const modelRequestIdRef = useRef(0);
+  const modelRequestAbortRef = useRef<AbortController | null>(null);
 
   const provider = useMemo(
     () => providerPresets.find((item) => item.value === settings.provider),
@@ -73,6 +76,63 @@ export function ModelSettingsForm() {
   function redirectToLogin() {
     localStorage.removeItem(AUTH_STORAGE_KEY);
     window.location.href = "/login";
+  }
+
+  function invalidateProviderModelRequest() {
+    modelRequestIdRef.current += 1;
+    modelRequestAbortRef.current?.abort();
+    modelRequestAbortRef.current = null;
+  }
+
+  async function loadSavedProviderModels(providerPreset: ModelProviderPreset) {
+    if (!providerPreset.hasApiKey) {
+      return;
+    }
+
+    const authState = parseAuthState(localStorage.getItem(AUTH_STORAGE_KEY));
+
+    if (!authState) {
+      redirectToLogin();
+      return;
+    }
+
+    invalidateProviderModelRequest();
+    const requestId = modelRequestIdRef.current;
+    const controller = new AbortController();
+    modelRequestAbortRef.current = controller;
+
+    try {
+      const response = await fetch(
+        `/api/settings/providers/${encodeURIComponent(providerPreset.value)}/models`,
+        {
+          method: "POST",
+          headers: {
+            Authorization: buildAuthorizationHeader(authState),
+          },
+          signal: controller.signal,
+        }
+      );
+      const data = await getResponseData(response);
+
+      if (response.status === 401) {
+        redirectToLogin();
+        return;
+      }
+
+      const models = response.ok ? parseProviderModels(data) : null;
+
+      if (modelRequestIdRef.current === requestId && models) {
+        setModelCandidates(models);
+      }
+    } catch (error) {
+      if (!(error instanceof DOMException && error.name === "AbortError")) {
+        // 厂商不支持模型目录时仍允许用户手动填写模型名。
+      }
+    } finally {
+      if (modelRequestIdRef.current === requestId) {
+        modelRequestAbortRef.current = null;
+      }
+    }
   }
 
   async function refreshSettingsAndProviders(authorization: string) {
@@ -197,6 +257,7 @@ export function ModelSettingsForm() {
 
     return () => {
       isCancelled = true;
+      invalidateProviderModelRequest();
     };
   }, []);
 
@@ -224,6 +285,12 @@ export function ModelSettingsForm() {
     setModelCandidates([]);
     setIsCustomModel(false);
     setNotice("");
+
+    invalidateProviderModelRequest();
+
+    if (nextProvider?.hasApiKey) {
+      void loadSavedProviderModels(nextProvider);
+    }
   }
 
   function getPayload(requireModel: boolean) {
@@ -262,6 +329,7 @@ export function ModelSettingsForm() {
     let authorization = "";
 
     try {
+      invalidateProviderModelRequest();
       const payload = getPayload(false);
       const authState = parseAuthState(localStorage.getItem(AUTH_STORAGE_KEY));
 

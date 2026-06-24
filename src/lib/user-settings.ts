@@ -207,3 +207,14 @@ export function parseSettingsTestResult(value: unknown): SettingsTestResult | nu
     modelListAvailable: value.model_list_available === true,
   };
 }
+
+export function parseProviderModels(value: unknown) {
+  if (!isRecord(value) || value.success !== true || !Array.isArray(value.models)) {
+    return null;
+  }
+
+  return value.models
+    .filter((model): model is string => typeof model === "string")
+    .map((model) => model.trim())
+    .filter(Boolean);
+}
