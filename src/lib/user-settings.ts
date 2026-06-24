@@ -6,6 +6,7 @@ export type UserLLMSettings = {
   model: string;
   baseUrl: string;
   hasApiKey: boolean;
+  apiKeyHint: string | null;
   temperature: number;
   maxTokens: number;
   timeoutSeconds: number;
@@ -41,6 +42,7 @@ export const DEFAULT_USER_LLM_SETTINGS: UserLLMSettings = {
   model: "deepseek-chat",
   baseUrl: "",
   hasApiKey: false,
+  apiKeyHint: null,
   temperature: 0.2,
   maxTokens: 8000,
   timeoutSeconds: 60,
@@ -119,6 +121,10 @@ export function parseUserLLMSettings(value: unknown): UserLLMSettings | null {
     model: readString(settings.model, DEFAULT_USER_LLM_SETTINGS.model),
     baseUrl: readString(settings.base_url),
     hasApiKey: settings.has_api_key === true,
+    apiKeyHint: (() => {
+      const hint = readString(settings.api_key_hint).trim();
+      return hint || null;
+    })(),
     temperature: readNumber(settings.temperature, DEFAULT_USER_LLM_SETTINGS.temperature),
     maxTokens: readNumber(settings.max_tokens, DEFAULT_USER_LLM_SETTINGS.maxTokens),
     timeoutSeconds: readNumber(settings.timeout_seconds, DEFAULT_USER_LLM_SETTINGS.timeoutSeconds),

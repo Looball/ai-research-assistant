@@ -53,6 +53,23 @@ export function ModelSettingsForm() {
   const requiresBaseUrl = provider?.requiresBaseUrl === true;
   const isUserKeyMode = settings.credentialMode === "user";
 
+  async function refreshSettings(authorization: string) {
+    try {
+      const response = await fetch("/api/settings", {
+        headers: { Authorization: authorization },
+        cache: "no-store",
+      });
+      const data = await getResponseData(response);
+      const nextSettings = response.ok ? parseUserLLMSettings(data) : null;
+
+      if (nextSettings) {
+        setSettings(nextSettings);
+      }
+    } catch {
+      // 测试状态提示优先于刷新失败，不额外暴露后端错误信息。
+    }
+  }
+
   useEffect(() => {
     let isCancelled = false;
     const authState = parseAuthState(localStorage.getItem(AUTH_STORAGE_KEY));
@@ -180,6 +197,8 @@ export function ModelSettingsForm() {
     setTestState("loading");
     setNotice("");
 
+    let authorization = "";
+
     try {
       const payload = getPayload(false);
       const authState = parseAuthState(localStorage.getItem(AUTH_STORAGE_KEY));
@@ -189,10 +208,12 @@ export function ModelSettingsForm() {
         return;
       }
 
+      authorization = buildAuthorizationHeader(authState);
+
       const response = await fetch("/api/settings", {
         method: "POST",
         headers: {
-          Authorization: buildAuthorizationHeader(authState),
+          Authorization: authorization,
           ...(isUserKeyMode ? { "Content-Type": "application/json" } : {}),
         },
         ...(isUserKeyMode ? { body: JSON.stringify(payload) } : {}),
@@ -219,7 +240,20 @@ export function ModelSettingsForm() {
       );
     } catch (error) {
       setTestState("error");
-      setNotice(error instanceof Error ? error.message : "连接测试失败，请检查配置。");
+      setNotice(
+        isUserKeyMode
+          ? "连接测试失败，但 API Key 已安全保存，可修改模型或地址后重试。"
+          : error instanceof Error
+            ? error.message
+            : "连接测试失败，请检查配置。"
+      );
+    } finally {
+      setApiKey("");
+      setShowApiKey(false);
+
+      if (authorization) {
+        await refreshSettings(authorization);
+      }
     }
   }
 
@@ -266,12 +300,14 @@ export function ModelSettingsForm() {
       if (nextSettings) {
         setSettings(nextSettings);
       }
-      setApiKey("");
       setSaveState("success");
       setNotice(getSettingsMessage(data, "设置已保存。"));
     } catch (error) {
       setSaveState("error");
       setNotice(error instanceof Error ? error.message : "保存设置失败，请稍后重试。");
+    } finally {
+      setApiKey("");
+      setShowApiKey(false);
     }
   }
 
@@ -339,10 +375,10 @@ export function ModelSettingsForm() {
           </label>}
 
           {isUserKeyMode && <section className="border border-[var(--line)] bg-[var(--paper-muted)] p-5" aria-labelledby="api-key-title">
-            <div className="flex items-baseline justify-between gap-4"><p id="api-key-title" className="font-utility text-[10px] font-semibold uppercase tracking-[0.12em] text-[var(--ink-muted)]">API Key</p>{settings.hasApiKey && <span className="text-xs font-semibold text-[var(--research)]">已保存</span>}</div>
+            <div className="flex items-baseline justify-between gap-4"><p id="api-key-title" className="font-utility text-[10px] font-semibold uppercase tracking-[0.12em] text-[var(--ink-muted)]">API Key</p>{settings.hasApiKey && <span className="text-xs font-semibold text-[var(--research)]">已保存 · {settings.apiKeyHint ?? "已保存"}</span>}</div>
             <div className="mt-3 flex border border-[var(--line)] bg-white focus-within:border-[var(--research)] focus-within:ring-3 focus-within:ring-[var(--research)]/15">
               <input type={showApiKey ? "text" : "password"} value={apiKey} onChange={(event) => setApiKey(event.target.value)} autoComplete="off" placeholder={settings.hasApiKey ? "已保存；填写可替换现有 Key" : "请输入 API Key"} className="min-w-0 flex-1 bg-transparent px-3 py-3 text-sm text-[var(--foreground)] outline-none" />
-              <button type="button" onClick={() => setShowApiKey((current) => !current)} className="border-l border-[var(--line)] px-4 text-xs font-semibold text-[var(--ink-muted)] hover:bg-[var(--paper-muted)]">{showApiKey ? "隐藏" : "显示"}</button>
+              <button type="button" onClick={() => setShowApiKey((current) => !current)} disabled={!apiKey} title={apiKey ? undefined : "已保存的 Key 不可查看"} className="border-l border-[var(--line)] px-4 text-xs font-semibold text-[var(--ink-muted)] hover:bg-[var(--paper-muted)] disabled:cursor-not-allowed disabled:text-[var(--line)]">{apiKey ? (showApiKey ? "隐藏" : "显示") : "不可查看"}</button>
             </div>
             <p className="mt-2 text-xs leading-5 text-[var(--ink-muted)]">密钥只会在保存或测试时发送到后端，页面不会回显或存入浏览器。</p>
           </section>}
