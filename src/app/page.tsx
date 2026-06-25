@@ -64,9 +64,16 @@ type KnowledgeFile = {
   name: string;
   size: number;
   fingerprint: string;
-  status: "ready" | "processing" | "pending";
+  status: KnowledgeFileStatus;
   usageCount: number | null;
 };
+
+type KnowledgeFileStatus =
+  | "pending"
+  | "queued"
+  | "processing"
+  | "indexed"
+  | "failed";
 
 type VectorIndexJobStatus =
   | "queued"
@@ -695,6 +702,7 @@ function toKnowledgeFile(
 
   const size = Number(knowledgeFile.size_bytes);
   const usageCount = Number(knowledgeFile.usage_count);
+  const status = getKnowledgeFileStatus(knowledgeFile.status);
 
   return {
     id: knowledgeFile.id,
@@ -703,13 +711,57 @@ function toKnowledgeFile(
     fingerprint: sourceFile
       ? getFileFingerprint(sourceFile)
       : knowledgeFile.id,
-    status: knowledgeFile.status === "ready"
-      ? "ready"
-      : knowledgeFile.status === "pending"
-        ? "pending"
-        : "processing",
+    status,
     usageCount: Number.isFinite(usageCount) ? usageCount : null,
   };
+}
+
+function getKnowledgeFileStatus(value: unknown): KnowledgeFileStatus {
+  if (value === "queued") {
+    return "queued";
+  }
+
+  if (value === "processing") {
+    return "processing";
+  }
+
+  if (value === "indexed" || value === "ready") {
+    return "indexed";
+  }
+
+  if (value === "failed") {
+    return "failed";
+  }
+
+  return "pending";
+}
+
+function getKnowledgeFileStatusText(status: KnowledgeFileStatus) {
+  if (status === "queued") {
+    return "排队中";
+  }
+
+  if (status === "processing") {
+    return "处理中";
+  }
+
+  if (status === "indexed") {
+    return "已向量化";
+  }
+
+  if (status === "failed") {
+    return "向量化失败";
+  }
+
+  return "未向量化";
+}
+
+function canDeleteKnowledgeFileVectors(status: KnowledgeFileStatus) {
+  return status === "indexed";
+}
+
+function isKnowledgeFileIndexingStatus(status: KnowledgeFileStatus) {
+  return status === "queued" || status === "processing";
 }
 
 function toVectorIndexJob(value: unknown): VectorIndexJob | null {
@@ -3826,15 +3878,11 @@ export default function Home() {
                     </p>
                   ) : selectedKnowledgeFiles.length > 0 ? (
                     selectedKnowledgeFiles.map((file) => {
-                      const usageCount =
-                        file.usageCount ??
-                        knowledgeBaseFiles.filter(
-                          (association) =>
-                            association.knowledgeFileId === file.id
-                        ).length;
                       const isFileIndexing = Boolean(
                         vectorIndexingFileIds[file.id]
                       );
+                      const isFileIndexingInBackend =
+                        isKnowledgeFileIndexingStatus(file.status);
 
                       return (
                         <div
@@ -3847,13 +3895,11 @@ export default function Home() {
                             </p>
                             <p className="mt-1 text-xs text-[#72807b]">
                               {formatFileSize(file.size)} ·{" "}
-                              {file.status === "processing"
-                                ? "处理中"
-                                : `${usageCount} 个知识库正在使用`}
+                              {getKnowledgeFileStatusText(file.status)}
                             </p>
                           </div>
                           <div className="flex shrink-0 items-center gap-2">
-                            {file.status !== "pending" && (
+                            {canDeleteKnowledgeFileVectors(file.status) && (
                               <button
                                 type="button"
                                 onClick={() => {
@@ -3861,6 +3907,7 @@ export default function Home() {
                                 }}
                                 disabled={
                                   isFileIndexing ||
+                                  isFileIndexingInBackend ||
                                   isIndexingKnowledgeBase ||
                                   Boolean(deletingVectorFileId)
                                 }
@@ -3877,11 +3924,15 @@ export default function Home() {
                                 void handleIndexKnowledgeFile(file.id);
                               }}
                               disabled={
-                                isFileIndexing || isIndexingKnowledgeBase
+                                isFileIndexing ||
+                                isFileIndexingInBackend ||
+                                isIndexingKnowledgeBase
                               }
                               className="px-2 py-1 text-xs font-semibold text-[#176b62] transition hover:bg-[#e4f0ec] disabled:cursor-not-allowed disabled:text-[#aab3b0]"
                             >
-                              {isFileIndexing ? "向量化中..." : "向量化"}
+                              {isFileIndexing || isFileIndexingInBackend
+                                ? "向量化中..."
+                                : "向量化"}
                             </button>
                             <button
                               type="button"
@@ -3929,15 +3980,11 @@ export default function Home() {
                     </p>
                   ) : reusableKnowledgeFiles.length > 0 ? (
                     reusableKnowledgeFiles.map((file) => {
-                      const usageCount =
-                        file.usageCount ??
-                        knowledgeBaseFiles.filter(
-                          (association) =>
-                            association.knowledgeFileId === file.id
-                        ).length;
                       const isFileIndexing = Boolean(
                         vectorIndexingFileIds[file.id]
                       );
+                      const isFileIndexingInBackend =
+                        isKnowledgeFileIndexingStatus(file.status);
 
                       return (
                         <div
@@ -3949,12 +3996,12 @@ export default function Home() {
                               {file.name}
                             </p>
                             <p className="mt-1 text-xs text-[#72807b]">
-                              {formatFileSize(file.size)} · 已用于 {usageCount}{" "}
-                              个知识库
+                              {formatFileSize(file.size)} ·{" "}
+                              {getKnowledgeFileStatusText(file.status)}
                             </p>
                           </div>
                           <div className="flex shrink-0 items-center gap-2">
-                            {file.status !== "pending" && (
+                            {canDeleteKnowledgeFileVectors(file.status) && (
                               <button
                                 type="button"
                                 onClick={() => {
@@ -3962,6 +4009,7 @@ export default function Home() {
                                 }}
                                 disabled={
                                   isFileIndexing ||
+                                  isFileIndexingInBackend ||
                                   isIndexingKnowledgeBase ||
                                   Boolean(deletingVectorFileId)
                                 }
@@ -3978,11 +4026,15 @@ export default function Home() {
                                 void handleIndexKnowledgeFile(file.id);
                               }}
                               disabled={
-                                isFileIndexing || isIndexingKnowledgeBase
+                                isFileIndexing ||
+                                isFileIndexingInBackend ||
+                                isIndexingKnowledgeBase
                               }
                               className="px-2 py-1 text-xs font-semibold text-[#176b62] transition hover:bg-[#e4f0ec] disabled:cursor-not-allowed disabled:text-[#aab3b0]"
                             >
-                              {isFileIndexing ? "向量化中..." : "向量化"}
+                              {isFileIndexing || isFileIndexingInBackend
+                                ? "向量化中..."
+                                : "向量化"}
                             </button>
                             <button
                               type="button"
