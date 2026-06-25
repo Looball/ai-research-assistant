@@ -449,6 +449,17 @@ function getStringField(
   return "";
 }
 
+function getRecordField(
+  value: Record<string, unknown>,
+  fieldName: string
+): Record<string, unknown> | null {
+  const fieldValue = value[fieldName];
+
+  return typeof fieldValue === "object" && fieldValue !== null
+    ? (fieldValue as Record<string, unknown>)
+    : null;
+}
+
 function toChatSource(value: unknown, index: number): ChatSource | null {
   if (typeof value === "string") {
     const normalized = value.trim();
@@ -467,28 +478,69 @@ function toChatSource(value: unknown, index: number): ChatSource | null {
   }
 
   const source = value as Record<string, unknown>;
+  const metadataRecord = getRecordField(source, "metadata");
   const title =
     getStringField(source, [
       "title",
+      "name",
       "file_name",
       "filename",
       "original_name",
+      "document_name",
+      "knowledge_file_name",
       "source",
       "document",
-    ]) || `参考文档 ${index + 1}`;
-  const content = getStringField(source, [
-    "content",
-    "text",
-    "chunk",
-    "snippet",
-    "page_content",
-  ]);
+    ]) ||
+    (metadataRecord
+      ? getStringField(metadataRecord, [
+          "title",
+          "name",
+          "file_name",
+          "filename",
+          "original_name",
+          "document_name",
+          "knowledge_file_name",
+          "source",
+          "document",
+        ])
+      : "") ||
+    `参考文档 ${index + 1}`;
+  const content =
+    getStringField(source, [
+      "content",
+      "text",
+      "chunk",
+      "chunk_text",
+      "snippet",
+      "excerpt",
+      "quote",
+      "page_content",
+    ]) ||
+    (metadataRecord
+      ? getStringField(metadataRecord, [
+          "content",
+          "text",
+          "chunk",
+          "chunk_text",
+          "snippet",
+          "excerpt",
+          "quote",
+          "page_content",
+        ])
+      : "");
 
   const metadataParts: string[] = [];
   const chunkIndex = source["chunk_index"] ?? source["chunk_id"];
   const rerankScore = source["rerank_score"] ?? source["score"];
   const retrievalSources = source["retrieval_sources"];
   const createdAt = source["created_at"];
+  const pageNumber =
+    source["page"] ??
+    source["page_number"] ??
+    source["page_index"] ??
+    metadataRecord?.page ??
+    metadataRecord?.page_number ??
+    metadataRecord?.page_index;
 
   if (
     (typeof chunkIndex === "number" && Number.isFinite(chunkIndex)) ||
@@ -508,6 +560,13 @@ function toChatSource(value: unknown, index: number): ChatSource | null {
     metadataParts.push(`相关性 ${rerankScore.toFixed(4)}`);
   }
 
+  if (
+    (typeof pageNumber === "number" && Number.isFinite(pageNumber)) ||
+    (typeof pageNumber === "string" && pageNumber.trim())
+  ) {
+    metadataParts.push(`页码 ${pageNumber}`);
+  }
+
   if (typeof createdAt === "string" && createdAt.trim()) {
     metadataParts.push(createdAt.trim());
   }
@@ -524,9 +583,15 @@ function toChatSource(value: unknown, index: number): ChatSource | null {
     }
   }
 
-  const legacyMetadata = getStringField(source, [
-    "knowledge_file_id",
-  ]);
+  const legacyMetadata =
+    getStringField(source, ["knowledge_file_id", "file_id", "document_id"]) ||
+    (metadataRecord
+      ? getStringField(metadataRecord, [
+          "knowledge_file_id",
+          "file_id",
+          "document_id",
+        ])
+      : "");
 
   const metadata =
     metadataParts.length > 0
@@ -548,10 +613,14 @@ function hasSourceShape(value: Record<string, unknown>) {
     "original_name",
     "source",
     "document",
+    "metadata",
     "content",
     "text",
     "chunk",
+    "chunk_text",
     "snippet",
+    "excerpt",
+    "quote",
     "page_content",
   ].some((fieldName) => fieldName in value);
 }
@@ -3333,10 +3402,7 @@ export default function Home() {
                   !message.content;
                 const sourceCount = message.sources?.length ?? 0;
                 const shouldShowSources =
-                  message.role === "assistant" &&
-                  sourceCount > 0 &&
-                  message.retrieval?.need_retrieval !== false &&
-                  message.retrieval?.source_count !== 0;
+                  message.role === "assistant" && sourceCount > 0;
                 const shouldShowRetrievalEmptyHint =
                   message.role === "assistant" &&
                   message.retrieval?.need_retrieval === true &&
