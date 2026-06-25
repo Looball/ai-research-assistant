@@ -47,6 +47,8 @@ function applyProviderCredentials(
 
 export function ModelSettingsForm() {
   const [username, setUsername] = useState("");
+  const [activeSettings, setActiveSettings] =
+    useState<UserLLMSettings | null>(null);
   const [settings, setSettings] = useState<UserLLMSettings>(
     DEFAULT_USER_LLM_SETTINGS
   );
@@ -60,6 +62,7 @@ export function ModelSettingsForm() {
   const [isLoading, setIsLoading] = useState(true);
   const [saveState, setSaveState] = useState<RequestState>("idle");
   const [testState, setTestState] = useState<RequestState>("idle");
+  const [modelLoadState, setModelLoadState] = useState<RequestState>("idle");
   const [notice, setNotice] = useState("");
   const modelRequestIdRef = useRef(0);
   const modelRequestAbortRef = useRef<AbortController | null>(null);
@@ -82,9 +85,13 @@ export function ModelSettingsForm() {
     modelRequestIdRef.current += 1;
     modelRequestAbortRef.current?.abort();
     modelRequestAbortRef.current = null;
+    setModelLoadState("idle");
   }
 
-  async function loadSavedProviderModels(providerPreset: ModelProviderPreset) {
+  async function loadSavedProviderModels(
+    providerPreset: ModelProviderPreset,
+    currentActiveSettings: UserLLMSettings | null
+  ) {
     if (!providerPreset.hasApiKey) {
       return;
     }
@@ -100,6 +107,7 @@ export function ModelSettingsForm() {
     const requestId = modelRequestIdRef.current;
     const controller = new AbortController();
     modelRequestAbortRef.current = controller;
+    setModelLoadState("loading");
 
     try {
       const response = await fetch(
@@ -121,12 +129,54 @@ export function ModelSettingsForm() {
 
       const models = response.ok ? parseProviderModels(data) : null;
 
-      if (modelRequestIdRef.current === requestId && models) {
-        setModelCandidates(models);
+      if (modelRequestIdRef.current !== requestId) {
+        return;
       }
+
+      if (!models) {
+        throw new Error(getSettingsMessage(data, "模型列表获取失败，请稍后重试。"));
+      }
+
+      const activeModel =
+        currentActiveSettings?.provider === providerPreset.value &&
+        currentActiveSettings.model.trim() &&
+        models.includes(currentActiveSettings.model)
+          ? currentActiveSettings.model
+          : "";
+
+      setModelCandidates(models);
+      setIsCustomModel(false);
+      setSettings((current) =>
+        current.provider === providerPreset.value
+          ? { ...current, model: activeModel }
+          : current
+      );
+      setModelLoadState("success");
+
+      setNotice(
+        activeModel
+          ? `已恢复当前生效模型：${activeModel}`
+          : models.length > 0
+            ? "模型列表已加载，请选择模型。"
+            : "该厂商未返回模型列表，请手动输入模型名。"
+      );
     } catch (error) {
       if (!(error instanceof DOMException && error.name === "AbortError")) {
-        // 厂商不支持模型目录时仍允许用户手动填写模型名。
+        if (modelRequestIdRef.current === requestId) {
+          setModelCandidates([]);
+          setIsCustomModel(false);
+          setSettings((current) =>
+            current.provider === providerPreset.value
+              ? { ...current, model: "" }
+              : current
+          );
+          setModelLoadState("error");
+          setNotice(
+            error instanceof Error
+              ? error.message
+              : "模型列表获取失败，请检查 API Key 或稍后重试。"
+          );
+        }
       }
     } finally {
       if (modelRequestIdRef.current === requestId) {
@@ -163,12 +213,12 @@ export function ModelSettingsForm() {
         : null;
 
       if (nextSettings) {
-        setSettings(
-          applyProviderCredentials(
-            nextSettings,
-            presets?.find((item) => item.value === nextSettings.provider)
-          )
+        const nextSettingsWithCredentialState = applyProviderCredentials(
+          nextSettings,
+          presets?.find((item) => item.value === nextSettings.provider)
         );
+        setActiveSettings(nextSettingsWithCredentialState);
+        setSettings(nextSettingsWithCredentialState);
       }
 
       if (presets) {
@@ -228,12 +278,12 @@ export function ModelSettingsForm() {
           : null;
 
         if (!isCancelled) {
-          setSettings(
-            applyProviderCredentials(
-              nextSettings,
-              presets?.find((item) => item.value === nextSettings.provider)
-            )
+          const nextSettingsWithCredentialState = applyProviderCredentials(
+            nextSettings,
+            presets?.find((item) => item.value === nextSettings.provider)
           );
+          setActiveSettings(nextSettingsWithCredentialState);
+          setSettings(nextSettingsWithCredentialState);
 
           if (presets) {
             setProviderPresets(presets);
@@ -284,12 +334,14 @@ export function ModelSettingsForm() {
     setShowApiKey(false);
     setModelCandidates([]);
     setIsCustomModel(false);
-    setNotice("");
 
     invalidateProviderModelRequest();
 
     if (nextProvider?.hasApiKey) {
-      void loadSavedProviderModels(nextProvider);
+      setNotice("正在获取该厂商的模型列表...");
+      void loadSavedProviderModels(nextProvider, activeSettings);
+    } else {
+      setNotice("该厂商尚未保存 API Key，请先输入 API Key。");
     }
   }
 
@@ -502,8 +554,9 @@ export function ModelSettingsForm() {
                   <span className="mt-2 block text-xs normal-case tracking-normal text-[var(--research)]">已获取 {modelCandidates.length} 个可选模型，可重新展开选择。</span>
                 </>
               ) : (
-                <input value={settings.model} onChange={(event) => setSettings((current) => ({ ...current, model: event.target.value }))} placeholder="先获取模型列表，或直接输入模型名称" className="research-focus mt-2 w-full border border-[var(--line)] bg-white px-3 py-3 text-sm normal-case tracking-normal text-[var(--foreground)]" />
+                <input value={settings.model} onChange={(event) => setSettings((current) => ({ ...current, model: event.target.value }))} placeholder={modelLoadState === "loading" ? "正在获取模型列表..." : "先获取模型列表，或直接输入模型名称"} className="research-focus mt-2 w-full border border-[var(--line)] bg-white px-3 py-3 text-sm normal-case tracking-normal text-[var(--foreground)]" />
               )}
+              {modelLoadState === "loading" && <span className="mt-2 block text-xs normal-case tracking-normal text-[var(--ink-muted)]">正在获取模型列表，请稍候。</span>}
             </label>
           </section>}
 
